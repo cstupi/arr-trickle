@@ -1,0 +1,13 @@
+{{define "title"}}Check {{.Result.Name}}{{end}}
+{{define "content"}}
+<div class="page-head">
+  <h1>Check: {{.Result.Name}}</h1>
+  {{if .Result.OK}}<span class="badge ok">All checks passed</span>{{else}}<span class="badge error">Some checks failed</span>{{end}}
+</div>
+<div class="card">
+  <p class="hint">A read-only probe of every endpoint arr-trickle uses. No searches were sent.</p>
+  <pre>{{range .Result.Lines}}{{.}}
+{{end}}</pre>
+  <a class="button secondary" href="/">Back to the dashboard</a>
+</div>
+{{end}}

@@ -1,0 +1,69 @@
+{{define "title"}}Dashboard{{end}}
+{{define "content"}}
+<div class="page-head">
+  <h1>Dashboard</h1>
+  <div class="actions">
+    <form method="post" action="/control/run-now" class="inline">
+      <input type="hidden" name="csrf" value="{{.CSRF}}"><button type="submit">Run now</button>
+    </form>
+    <form method="post" action="/control/{{if .Snap.Paused}}resume{{else}}pause{{end}}" class="inline">
+      <input type="hidden" name="csrf" value="{{.CSRF}}"><button type="submit" class="secondary">{{if .Snap.Paused}}Resume{{else}}Pause{{end}}</button>
+    </form>
+    <form method="post" action="/control/dry-run" class="inline">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <button type="submit" class="secondary">{{if .Snap.DryRun}}Turn dry run off{{else}}Turn dry run on{{end}}</button>
+    </form>
+  </div>
+</div>
+
+<section class="tiles">
+  <div class="tile"><span class="label">Status</span>
+    <span class="value">{{if .Snap.Running}}<span class="badge ok">Pass running</span>{{else if .Snap.Paused}}<span class="badge warn">Paused</span>{{else}}<span class="badge ok">Active</span>{{end}}
+    {{if .Snap.DryRun}}<span class="badge warn">Dry run</span>{{end}}</span></div>
+  <div class="tile"><span class="label">Last pass</span><span class="value">{{when .Snap.LastPass}}</span></div>
+  <div class="tile"><span class="label">Next pass</span><span class="value">{{if .Snap.Paused}}paused{{else}}{{when .Snap.NextPass}}{{end}}</span></div>
+  <div class="tile"><span class="label">Interval</span><span class="value">every {{.Snap.IntervalMinutes}} min</span></div>
+</section>
+
+<h2>Instances</h2>
+{{if not .Snap.Instances}}
+<div class="card"><p>No instances yet.</p><a class="button" href="/settings">Add one in Settings</a></div>
+{{else}}
+<div class="cards">
+  {{$csrf := .CSRF}}
+  {{range .Snap.Instances}}
+  <article class="card">
+    <div class="card-head">
+      <div><h3>{{.Name}}</h3><small>{{.Kind}} · {{.URL}}</small></div>
+      {{with .Report}}{{if .Error}}<span class="badge error">Unreachable</span>{{else if .Health}}<span class="badge warn">Blocked</span>{{else}}<span class="badge ok">Healthy</span>{{end}}
+      {{else}}<span class="badge">Not checked yet</span>{{end}}
+    </div>
+    <dl class="stats">
+      {{with .Report}}
+      <div><dt>Missing</dt><dd>{{num .MissingTotal}}</dd></div>
+      <div><dt>Cutoff unmet</dt><dd>{{num .CutoffTotal}}</dd></div>
+      <div><dt>Queue</dt><dd>{{num .Queue}}</dd></div>
+      {{else}}
+      <div><dt>Missing</dt><dd>–</dd></div><div><dt>Cutoff unmet</dt><dd>–</dd></div><div><dt>Queue</dt><dd>–</dd></div>
+      {{end}}
+      <div><dt>Searches today</dt><dd>{{.BudgetUsed}}{{if .BudgetCap}}<small> / {{.BudgetCap}}</small>{{end}}</dd></div>
+    </dl>
+    <p class="result">
+      {{with .Report}}
+        {{if .Error}}<span class="error">{{.Error}}</span>
+        {{else if .Health}}<span class="warn">{{join .Health "; "}}</span>
+        {{else if .Skipped}}Skipped: {{.Skipped}}
+        {{else}}{{len .Searches}} search(es){{if and .Searches (index .Searches 0).DryRun}} (dry run){{end}} in the last pass{{end}}
+      {{else}}<span class="muted">Waiting for the first pass.</span>{{end}}
+      <br><small>Last pass: {{when .LastPass}}</small>
+    </p>
+    <form method="post" action="/control/check" class="inline">
+      <input type="hidden" name="csrf" value="{{$csrf}}">
+      <input type="hidden" name="name" value="{{.Name}}">
+      <button type="submit" class="secondary small">Check</button>
+    </form>
+  </article>
+  {{end}}
+</div>
+{{end}}
+{{end}}

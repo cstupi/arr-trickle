@@ -1,0 +1,70 @@
+{{define "title"}}{{if .Edit}}Edit{{else}}Add{{end}} {{.Kind}}{{end}}
+{{define "content"}}
+{{$v := .Values}}{{$e := .Errors}}
+<div class="page-head"><h1>{{if .Edit}}Edit{{else}}Add{{end}} {{capitalize .Kind}} instance</h1></div>
+{{range .General}}<p class="error">{{.}}</p>{{end}}
+<div class="card form">
+<form method="post" action="{{.Action}}" class="stack">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <input type="hidden" name="kind" value="{{.Kind}}">
+  {{if .Edit}}<input type="hidden" name="original_name" value="{{index $v "original_name"}}">{{end}}
+  <div class="grid2">
+    <label class="field"><span>Name</span>
+      <input name="name" value="{{index $v "name"}}" maxlength="64" placeholder="{{.Kind}}">
+      <small>Unique. Leave blank for the default.</small>
+      {{range index $e "name"}}<span class="error">{{.}}</span>{{end}}</label>
+    <label class="field"><span>URL</span>
+      <input name="url" value="{{index $v "url"}}" placeholder="http://{{.Kind}}:{{port .Kind}}" required maxlength="2048">
+      {{range index $e "url"}}<span class="error">{{.}}</span>{{end}}</label>
+  </div>
+
+  <fieldset>
+    <legend>API key</legend>
+    <p class="hint">arr-trickle reads the key from where you point it, and never shows a key.</p>
+    <div class="grid2">
+      <label class="field"><span>Read the key from</span>
+        <select name="key_source">
+          {{$src := index $v "key_source"}}
+          {{range .Sources}}<option value="{{.Field}}"{{if eq .Field $src}} selected{{end}}>{{.Label}}</option>{{end}}
+        </select></label>
+      <label class="field"><span>Path or variable name</span>
+        <input name="key_ref" value="{{index $v "key_ref"}}" maxlength="1024">
+        {{range index $e "key_ref"}}<span class="error">{{.}}</span>{{end}}</label>
+    </div>
+    {{if .Managed}}<p class="hint ok">Uses a key you entered here, stored in the state directory (mode 0600).</p>{{end}}
+    <label class="field"><span>Or paste a new key</span>
+      <input name="api_key" type="password" value="" autocomplete="off" maxlength="128">
+      <small>Write-only: stored in the state directory, never in config.toml, never shown again.</small>
+      {{range index $e "api_key"}}<span class="error">{{.}}</span>{{end}}</label>
+  </fieldset>
+
+  <div class="grid2">
+    <label class="field"><span>Missing items per pass</span>
+      <input name="missing" value="{{index $v "missing"}}" inputmode="numeric" maxlength="20">
+      <small>0 to 100. Sonarr counts seasons.</small>
+      {{range index $e "missing"}}<span class="error">{{.}}</span>{{end}}</label>
+    <label class="field"><span>Upgrades per pass</span>
+      <input name="cutoff" value="{{index $v "cutoff"}}" inputmode="numeric" maxlength="20">
+      <small>Cutoff-unmet items, 0 to 100.</small>
+      {{range index $e "cutoff"}}<span class="error">{{.}}</span>{{end}}</label>
+    <label class="field"><span>Daily cap</span>
+      <input name="daily_cap" value="{{index $v "daily_cap"}}" inputmode="numeric" maxlength="20">
+      <small>Searches per UTC day; 0 means none.</small>
+      {{range index $e "daily_cap"}}<span class="error">{{.}}</span>{{end}}</label>
+    <label class="field"><span>Pause at queue size</span>
+      <input name="max_queue" value="{{index $v "max_queue"}}" inputmode="numeric" maxlength="20">
+      <small>Skip while the download queue holds this many; 0 means never.</small>
+      {{range index $e "max_queue"}}<span class="error">{{.}}</span>{{end}}</label>
+    <label class="field"><span>Exclude</span>
+      <input name="exclude" value="{{index $v "exclude"}}" maxlength="4096">
+      <small>{{capitalize (owner .Kind)}} ids, comma-separated.</small>
+      {{range index $e "exclude"}}<span class="error">{{.}}</span>{{end}}</label>
+    <label class="field"><span>Request timeout</span>
+      <input name="timeout_seconds" value="{{index $v "timeout_seconds"}}" inputmode="numeric" maxlength="20">
+      <small>Seconds, 5 to 600.</small>
+      {{range index $e "timeout_seconds"}}<span class="error">{{.}}</span>{{end}}</label>
+  </div>
+  <div class="row"><button type="submit">Save</button> <a class="button secondary" href="/settings">Cancel</a></div>
+</form>
+</div>
+{{end}}

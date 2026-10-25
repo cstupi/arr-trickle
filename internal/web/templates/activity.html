@@ -1,0 +1,39 @@
+{{define "title"}}Activity{{end}}
+{{define "content"}}
+<div class="page-head">
+  <h1>Activity</h1>
+  <form method="get" action="/activity" class="row">
+    {{$cur := .Instance}}
+    <select name="instance" aria-label="Instance">
+      <option value="">All instances</option>
+      {{range .Names}}<option value="{{.}}"{{if eq . $cur}} selected{{end}}>{{.}}</option>{{end}}
+    </select>
+    <button type="submit" class="secondary">Filter</button>
+  </form>
+</div>
+{{if not .Entries}}
+<div class="card"><p class="muted">No searches recorded yet.</p></div>
+{{else}}
+<div class="card scroll">
+<table>
+  <thead><tr><th>Time (UTC)</th><th>Instance</th><th>Search</th><th>Items</th><th>Cost</th></tr></thead>
+  <tbody>
+  {{range .Entries}}
+  <tr>
+    <td class="nowrap">{{activityTime .Time}}</td>
+    <td>{{.Instance}}</td>
+    <td class="nowrap">{{.Command}}<br><small>{{.Kind}}</small>{{if .DryRun}} <span class="badge warn">dry run</span>{{end}}</td>
+    <td>{{join .Items "; "}}</td>
+    <td data-label="Cost">{{.Cost}}</td>
+  </tr>
+  {{end}}
+  </tbody>
+</table>
+</div>
+{{end}}
+<p class="row pager">
+  {{with .Newer}}<a class="button secondary small" href="{{.}}">← Newer</a>{{end}}
+  Page {{.Page}} of {{.Pages}}
+  {{with .Older}}<a class="button secondary small" href="{{.}}">Older →</a>{{end}}
+</p>
+{{end}}

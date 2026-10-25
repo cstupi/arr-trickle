@@ -4,11 +4,15 @@ updates:
     directory: /
     schedule:
       interval: weekly
-  - package-ecosystem: docker
+  - package-ecosystem: docker  # the pinned Go build image
     directory: /
     schedule:
       interval: weekly
-  - package-ecosystem: pip  # dev tooling only; the package has no runtime dependencies
+  - package-ecosystem: gomod  # BurntSushi/toml and golang.org/x/crypto, pinned with hashes in go.sum
     directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: gomod  # staticcheck and govulncheck, run with `go tool -modfile=tools/go.mod`
+    directory: /tools
     schedule:
       interval: weekly

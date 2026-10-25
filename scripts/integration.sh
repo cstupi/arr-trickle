@@ -2,12 +2,12 @@
 # Integration tests against real, throwaway Sonarr/Radarr/Lidarr containers.
 #
 # Starts fresh instances on a private Docker network (no host ports), waits for them,
-# runs tests/integration in a Python container on the same network, then removes
+# runs the Go integration tests (integration/, build tag `integration`) in a Go container on the same network, then removes
 # everything. Used locally and by CI. Nothing touches an existing *arr install.
 #
 #   scripts/integration.sh              # latest images
 #   ARR_TAG=4.0.16 scripts/integration.sh   # pin a tag for every app (or SONARR_IMAGE=..., etc.)
-#   ARR_IT_SHELL='python debug.py' scripts/integration.sh   # run a command against the apps instead
+#   ARR_IT_SHELL='go run ./cmd/arr-trickle check' scripts/integration.sh   # run a command against the apps instead
 set -eu
 cd "$(dirname "$0")/.."
 
@@ -55,10 +55,8 @@ for app in $APPS; do
 done
 
 # shellcheck disable=SC2086  # ENV_ARGS is a deliberate word-split list of -e flags
-docker run --rm --network "$NET" --user "$(id -u):$(id -g)" -e HOME=/tmp -e ARR_IT_SHELL="${ARR_IT_SHELL:-}" $ENV_ARGS \
-    -v "$PWD":/src -v "$WORK":"$WORK" -w /src python:3.12.7-slim sh -euc '
-python -m venv /tmp/v >/dev/null && . /tmp/v/bin/activate
-pip install -q --disable-pip-version-check -e ".[dev]"
+docker run --rm --network "$NET" --user "$(id -u):$(id -g)" -e HOME=/tmp -e GOPATH=/tmp/go -e GOCACHE=/tmp/go-cache \
+    -e ARR_IT_SHELL="${ARR_IT_SHELL:-}" $ENV_ARGS -v "$PWD":/src -v "$WORK":"$WORK" -w /src golang:1.26.10 sh -euc '
 if [ -n "${ARR_IT_SHELL:-}" ]; then sh -c "$ARR_IT_SHELL"; else
-pytest -p no:cacheprovider -m integration tests/integration -v "$@"; fi
+go test -count=1 -tags integration -v -timeout 15m ./integration/ "$@"; fi
 ' sh "$@"

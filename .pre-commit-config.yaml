@@ -12,8 +12,16 @@ repos:
       - id: check-added-large-files
       - id: end-of-file-fixer
       - id: trailing-whitespace
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.7.1
+  - repo: local
     hooks:
-      - id: ruff-format
-      - id: ruff
+      - id: gofmt
+        name: gofmt
+        entry: sh -c 'test -z "$(gofmt -l "$@" | tee /dev/stderr)"' --
+        language: system
+        types: [go]
+      - id: go-vet
+        name: go vet
+        entry: go vet ./...
+        language: system
+        types: [go]
+        pass_filenames: false

@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{template "title" .}} · arr-trickle</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="/">arr-trickle</a>
+  {{- if .Authenticated}}
+  <nav>
+    <a href="/"{{if eq .Path "/"}} aria-current="page"{{end}}>Dashboard</a>
+    <a href="/activity"{{if eq .Path "/activity"}} aria-current="page"{{end}}>Activity</a>
+    <a href="/settings"{{if hasPrefix .Path "/settings"}} aria-current="page"{{end}}>Settings</a>
+  </nav>
+  <form method="post" action="/logout" class="inline">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <button type="submit" class="link">Log out</button>
+  </form>
+  {{- end}}
+</header>
+<main>
+{{range .Flash}}<p class="flash">{{.}}</p>{{end}}
+{{template "content" .}}
+</main>
+<footer>arr-trickle {{.Version}}</footer>
+</body>
+</html>

@@ -1,12 +1,24 @@
-# arr-trickle settings. Mount at /config/config.toml (or set ARR_TRICKLE_CONFIG).
+# arr-trickle settings. Mount the folder holding it at /config (or set ARR_TRICKLE_CONFIG).
 # Unknown keys are rejected at startup, so typos fail loudly instead of being ignored.
 # This file holds no secrets: each instance names where its API key is read from.
+# The web UI can edit this file too. Saving from the UI rewrites it WITHOUT these comments
+# (the previous version is kept as config.toml.bak).
 
 interval_minutes = 60        # 5-1440; one pass over every instance per interval
 # dry_run = true             # log what would be searched, send nothing
 # log_level = "INFO"         # DEBUG, INFO, WARNING, ERROR
 # state_dir = "/state"       # daily budget counter and heartbeat
 # allow_insecure_http = false  # plain http is only allowed to private/LAN/container hosts
+
+# The web UI. Everything here is edited only in this file (the UI shows it read-only); restart after changes.
+# [web]
+# enabled = true               # false: no listening port at all, like v0.2
+# listen = "0.0.0.0"           # all interfaces inside the container; allowed_networks decides who may connect
+# port = 8790
+# cookie_secure = false        # true once you serve it over https (a reverse proxy); also automatic per request
+# session_hours = 12           # absolute session lifetime (1-720); sessions also end after 1 hour idle
+# allowed_networks = ["127.0.0.0/8", "::1/128", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7"]
+# trusted_proxies = []         # e.g. ["172.20.0.5"]: only these may set X-Forwarded-For/-Proto/-Host
 
 [[sonarr]]
 url = "http://sonarr:8989"
