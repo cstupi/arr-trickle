@@ -1,0 +1,54 @@
+{{define "title"}}{{if .Edit}}Edit{{else}}Add{{end}} {{.Kind}}{{end}}
+{{define "content"}}
+<h1>{{if .Edit}}Edit{{else}}Add{{end}} {{capitalize .Kind}} instance</h1>
+{{range .General}}<p class="error">{{.}}</p>{{end}}
+{{$v := .Values}}{{$e := .Errors}}
+<form method="post" action="{{.Action}}" class="narrow">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <input type="hidden" name="kind" value="{{.Kind}}">
+  {{if .Edit}}<input type="hidden" name="original_name" value="{{index $v "original_name"}}">{{end}}
+  <label>Name (unique; blank for the default)
+    <input name="name" value="{{index $v "name"}}" maxlength="64"></label>
+  {{range index $e "name"}}<span class="error">{{.}}</span>{{end}}
+  <label>URL
+    <input name="url" value="{{index $v "url"}}" placeholder="http://{{.Kind}}:{{port .Kind}}" required maxlength="2048"></label>
+  {{range index $e "url"}}<span class="error">{{.}}</span>{{end}}
+
+  <fieldset>
+    <legend>API key</legend>
+    <p class="hint">arr-trickle reads the key from where you point it. It never shows a key.</p>
+    <label>Read the key from
+      <select name="key_source">
+        {{$src := index $v "key_source"}}
+        {{range .Sources}}<option value="{{.Field}}"{{if eq .Field $src}} selected{{end}}>{{.Label}}</option>{{end}}
+      </select></label>
+    <label>Path or variable name
+      <input name="key_ref" value="{{index $v "key_ref"}}" maxlength="1024"></label>
+    {{if .Managed}}<p class="hint">This instance uses a key you entered here. It is stored in the state directory (mode 0600).</p>{{end}}
+    {{range index $e "key_ref"}}<span class="error">{{.}}</span>{{end}}
+    <label>Or paste a new key (write-only; stored in the state directory, not in config.toml)
+      <input name="api_key" type="password" value="" autocomplete="off" maxlength="128"></label>
+    {{range index $e "api_key"}}<span class="error">{{.}}</span>{{end}}
+  </fieldset>
+
+  <label>Missing items per pass (0-100; Sonarr counts seasons)
+    <input name="missing" value="{{index $v "missing"}}" inputmode="numeric" maxlength="20"></label>
+  {{range index $e "missing"}}<span class="error">{{.}}</span>{{end}}
+  <label>Cutoff-unmet upgrades per pass (0-100)
+    <input name="cutoff" value="{{index $v "cutoff"}}" inputmode="numeric" maxlength="20"></label>
+  {{range index $e "cutoff"}}<span class="error">{{.}}</span>{{end}}
+  <label>Daily cap (searches per UTC day, 0 = none)
+    <input name="daily_cap" value="{{index $v "daily_cap"}}" inputmode="numeric" maxlength="20"></label>
+  {{range index $e "daily_cap"}}<span class="error">{{.}}</span>{{end}}
+  <label>Skip while the download queue holds at least (0 = never)
+    <input name="max_queue" value="{{index $v "max_queue"}}" inputmode="numeric" maxlength="20"></label>
+  {{range index $e "max_queue"}}<span class="error">{{.}}</span>{{end}}
+  <label>Exclude ids ({{owner .Kind}} ids, comma-separated)
+    <input name="exclude" value="{{index $v "exclude"}}" maxlength="4096"></label>
+  {{range index $e "exclude"}}<span class="error">{{.}}</span>{{end}}
+  <label>Request timeout in seconds (5-600)
+    <input name="timeout_seconds" value="{{index $v "timeout_seconds"}}" inputmode="numeric" maxlength="20"></label>
+  {{range index $e "timeout_seconds"}}<span class="error">{{.}}</span>{{end}}
+  <button type="submit">Save</button> <a href="/settings">Cancel</a>
+</form>
+{{end}}

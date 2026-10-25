@@ -1,3 +1,7 @@
 *
-!src/arr_trickle/**
-**/__pycache__
+!go.mod
+!go.sum
+!cmd/**
+!internal/**
+internal/testutil
+**/*_test.go

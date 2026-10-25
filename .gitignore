@@ -12,28 +12,23 @@ secrets/
 config.xml
 # your real settings and state (examples/config.toml is the committed template)
 config.toml
+config.toml.bak
 !examples/config.toml
 budget.json
 heartbeat
+paused
+activity.jsonl*
+# web UI state: the admin's password hash and the one-time setup code
+auth.json
+setup-code
 *.tmp
 
-# --- Python ----------------------------------------------------------------
-__pycache__/
-*.py[cod]
-*.egg-info/
-build/
-dist/
-.venv/
-venv/
-
-# --- Tooling ---------------------------------------------------------------
-.coverage
-.coverage.*
-coverage.xml
-htmlcov/
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
+# --- Go -------------------------------------------------------------------
+/arr-trickle
+*.test
+*.out
+cover.html
+vendor/
 
 # --- Editors / OS ----------------------------------------------------------
 .idea/

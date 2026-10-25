@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.3.0
+
+- **Rewritten in Go.** arr-trickle is now one static binary, and the image is `FROM scratch` (about 10 MB, no
+  OS packages; Trivy finds nothing). Settings, CLI commands, behaviour and on-disk state are unchanged:
+  `config.toml`, `budget.json`, the activity log and the web UI's `auth.json` carry over as-is, so an
+  existing install upgrades without redoing setup. Dependencies: `golang.org/x/crypto` (scrypt) and
+  `BurntSushi/toml`, pinned in `go.sum`.
+- **Web UI** (port 8790; turn it off with `[web] enabled = false`). It is server-rendered with no JavaScript. Pages:
+  - Dashboard: per-instance health, backlog sizes, queue, daily budget, and the last and next pass. Controls for
+    Run now, Pause/Resume (persisted), dry-run toggle, and a per-instance Check.
+  - Activity: every search sent, with paging and a filter by instance.
+  - Settings: edit global settings and add, edit or remove instances, validated by the same rules as the file.
+    Saves are atomic, keep a `.bak`, and are hot-reloaded. Comments in `config.toml` are not kept when saving from the UI.
+- Security for the UI: login on every route (deny by default), no default credentials (a one-time setup code
+  in the log, `reset-password` command), scrypt password hashes, server-side sessions with idle and absolute
+  timeouts, CSRF tokens plus an Origin/Referer check, login rate limiting, a strict CSP, a LAN-only
+  `allowed_networks` default, and `X-Forwarded-For` honoured only from `trusted_proxies`. API keys are never
+  shown. A key typed into the UI is write-only and stored in `/state/secrets/<instance>.key` (0600), never in `config.toml`.
+- New `[web]` settings table: `enabled`, `listen`, `port`, `cookie_secure`, `session_hours`, `allowed_networks`,
+  `trusted_proxies`.
+- Engine: a background scheduler with a status snapshot, a thread-safe daily budget, and an activity log
+  (`/state/activity.jsonl`, rotated). Each pass returns a per-instance report, and the wanted lists report their totals.
+- Tests: unit tests (race detector, 96% coverage), staticcheck and govulncheck, plus the integration suite
+  against real Sonarr/Radarr/Lidarr, now including an end-to-end run through the web UI.
+- **Upgrading from 0.2:** mount the config *folder* read-write at `/config` (not just the file) if you
+  want to save from the UI, and publish port 8790 to your LAN. The image's entrypoint is now `/arr-trickle`
+  (there is no `python3` in it), so use `docker compose exec arr-trickle /arr-trickle <command>`. Startup now allows a config with no instances
+  when the UI is enabled. While passes are paused, the heartbeat keeps updating, so `healthcheck` stays healthy.
+
 ## 0.2.0
 
 - TOML settings file with strict validation. It supports multiple instances per app and keeps env-var

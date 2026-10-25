@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{template "title" .}} · arr-trickle</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <strong class="brand">arr-trickle</strong>
+  {{- if .Authenticated}}
+  <nav>
+    <a href="/">Dashboard</a>
+    <a href="/activity">Activity</a>
+    <a href="/settings">Settings</a>
+    <form method="post" action="/logout" class="inline">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <button type="submit" class="link">Log out</button>
+    </form>
+  </nav>
+  {{- end}}
+</header>
+<main>
+{{range .Flash}}<p class="flash">{{.}}</p>{{end}}
+{{template "content" .}}
+</main>
+<footer>arr-trickle {{.Version}}</footer>
+</body>
+</html>

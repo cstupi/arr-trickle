@@ -1,0 +1,40 @@
+{{define "title"}}Activity{{end}}
+{{define "content"}}
+<h1>Activity</h1>
+<form method="get" action="/activity" class="inline">
+  <label>Instance
+    <select name="instance">
+      <option value="">all</option>
+      {{$cur := .Instance}}
+      {{range .Names}}<option value="{{.}}"{{if eq . $cur}} selected{{end}}>{{.}}</option>{{end}}
+    </select>
+  </label>
+  <button type="submit">Filter</button>
+</form>
+{{if not .Entries}}
+<p>No searches recorded yet.</p>
+{{else}}
+<div class="scroll">
+<table>
+  <thead><tr><th>Time (UTC)</th><th>Instance</th><th>Kind</th><th>Command</th><th>Items</th><th>Cost</th></tr></thead>
+  <tbody>
+  {{range .Entries}}
+  <tr>
+    <td>{{activityTime .Time}}</td>
+    <td>{{.Instance}}</td>
+    <td>{{.Kind}}</td>
+    <td>{{.Command}}{{if .DryRun}} <span class="badge warn">dry run</span>{{end}}</td>
+    <td>{{join .Items "; "}}</td>
+    <td>{{.Cost}}</td>
+  </tr>
+  {{end}}
+  </tbody>
+</table>
+</div>
+{{end}}
+<p class="pager">
+  {{with .Newer}}<a href="{{.}}">Newer</a>{{end}}
+  Page {{.Page}} of {{.Pages}}
+  {{with .Older}}<a href="{{.}}">Older</a>{{end}}
+</p>
+{{end}}

@@ -32,29 +32,32 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-go@v5
         with:
-          python-version: "3.12"
-      - run: pip install -e ".[dev]"
-      - run: ruff format --check src tests
-      - run: ruff check --output-format=github src tests
-      - run: mypy
+          go-version-file: go.mod
+      - name: gofmt
+        run: test -z "$(gofmt -l . | tee /dev/stderr)"
+      - run: go mod verify
+      - run: go vet ./... && go vet -tags integration ./integration/
+      - run: go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 ./...
+      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 
   unit:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python: ["3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-go@v5
         with:
-          python-version: ${{ matrix.python }}
-      - run: pip install -e ".[dev]"
-      - run: pytest --cov --cov-report=term-missing
+          go-version-file: go.mod
+      - name: Tests (race detector) with coverage of at least 90%
+        run: |
+          pkgs="$(go list ./internal/... | grep -v /testutil | paste -sd, -)"
+          go test -race -count=1 -coverpkg="$pkgs" -coverprofile=cover.out ./...
+          total="$(go tool cover -func=cover.out | awk '/^total:/ {sub("%", "", $3); print $3}')"
+          echo "total coverage: ${total}%"
+          awk -v t="$total" 'BEGIN { exit (t >= 90) ? 0 : 1 }'
 
   integration:
     # Real Sonarr/Radarr/Lidarr in throwaway containers: catches upstream API drift.
@@ -76,9 +79,23 @@ jobs:
       - name: Image runs, rejects bad config, accepts the example
         run: |
           docker run --rm arr-trickle:ci --version
-          docker run --rm -v "$PWD/examples/config.toml:/config/config.toml:ro" -e LIDARR_API_KEY=fakefakefakefakefakefakefakefake \
-            --entrypoint python3 arr-trickle:ci -I -c "from arr_trickle.config import load; load('/config/config.toml')"
+          printf '<Config><ApiKey>fakefakefakefakefakefakefakefake</ApiKey></Config>' > "$RUNNER_TEMP/config.xml"
+          chmod 644 "$RUNNER_TEMP/config.xml"
+          docker run --rm -v "$PWD/examples:/config:ro" -e LIDARR_API_KEY=fakefakefakefakefakefakefakefake \
+            -v "$RUNNER_TEMP/config.xml:/arr/sonarr/config.xml:ro" -v "$RUNNER_TEMP/config.xml:/arr/radarr/config.xml:ro" \
+            arr-trickle:ci validate
           ! docker run --rm -e SONARR_URL=ftp://x arr-trickle:ci validate
+      - name: Web UI starts read-only, prints a setup code, and protects its pages
+        run: |
+          docker run -d --name ui --read-only --cap-drop ALL --security-opt no-new-privileges:true \
+            --tmpfs /state:uid=65534,gid=65534 -p 127.0.0.1:8790:8790 arr-trickle:ci
+          for _ in $(seq 1 30); do curl -fs http://127.0.0.1:8790/healthz && break; sleep 1; done
+          test "$(curl -fs http://127.0.0.1:8790/healthz)" = ok
+          docker logs ui 2>&1 | grep -q "Setup code: "
+          test "$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' http://127.0.0.1:8790/settings)" = "303 http://127.0.0.1:8790/login"
+          test "$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8790/control/run-now)" = 401
+          docker exec ui /arr-trickle healthcheck
+          docker rm -f ui
       - name: Scan image for vulnerabilities
         uses: aquasecurity/trivy-action@0.28.0
         with:

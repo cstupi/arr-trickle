@@ -1,0 +1,74 @@
+{{define "title"}}Dashboard{{end}}
+{{define "content"}}
+<h1>Dashboard</h1>
+<section class="controls">
+  <p>
+    {{if .Snap.Running}}<span class="badge">pass running</span>{{end}}
+    {{if .Snap.Paused}}<span class="badge warn">paused</span>{{else}}<span class="badge ok">active</span>{{end}}
+    {{if .Snap.DryRun}}<span class="badge warn">dry run</span>{{end}}
+    Every {{.Snap.IntervalMinutes}} min. Last pass: {{when .Snap.LastPass}}.
+    Next pass: {{if .Snap.Paused}}paused{{else}}{{when .Snap.NextPass}}{{end}}.
+  </p>
+  <form method="post" action="/control/run-now" class="inline">
+    <input type="hidden" name="csrf" value="{{.CSRF}}"><button type="submit">Run now</button>
+  </form>
+  {{if .Snap.Paused}}
+  <form method="post" action="/control/resume" class="inline">
+    <input type="hidden" name="csrf" value="{{.CSRF}}"><button type="submit">Resume</button>
+  </form>
+  {{else}}
+  <form method="post" action="/control/pause" class="inline">
+    <input type="hidden" name="csrf" value="{{.CSRF}}"><button type="submit">Pause</button>
+  </form>
+  {{end}}
+  <form method="post" action="/control/dry-run" class="inline">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <button type="submit">{{if .Snap.DryRun}}Turn dry run off{{else}}Turn dry run on{{end}}</button>
+  </form>
+</section>
+
+{{if not .Snap.Instances}}
+<p>No instances yet. <a href="/settings">Add one in Settings.</a></p>
+{{else}}
+<div class="scroll">
+<table>
+  <thead><tr>
+    <th>Instance</th><th>Health</th><th>Missing</th><th>Cutoff unmet</th><th>Queue</th>
+    <th>Searches today</th><th>Last pass</th><th>Last result</th><th></th>
+  </tr></thead>
+  <tbody>
+  {{$csrf := .CSRF}}
+  {{range .Snap.Instances}}
+  <tr>
+    <td><strong>{{.Name}}</strong><br><small>{{.Kind}} · {{.URL}}</small></td>
+    {{with .Report}}
+    <td>{{if .Error}}<span class="error">unreachable</span>{{else if .Health}}<span class="warn">{{join .Health "; "}}</span>{{else}}<span class="ok">ok</span>{{end}}</td>
+    <td>{{num .MissingTotal}}</td>
+    <td>{{num .CutoffTotal}}</td>
+    <td>{{num .Queue}}</td>
+    {{else}}
+    <td><span class="muted">not checked yet</span></td><td>–</td><td>–</td><td>–</td>
+    {{end}}
+    <td>{{.BudgetUsed}}{{if .BudgetCap}} / {{.BudgetCap}}{{end}}</td>
+    <td>{{when .LastPass}}</td>
+    <td>
+      {{with .Report}}
+        {{if .Error}}<span class="error">{{.Error}}</span>
+        {{else if .Skipped}}skipped: {{.Skipped}}
+        {{else}}{{len .Searches}} search(es){{if and .Searches (index .Searches 0).DryRun}} (dry run){{end}}{{end}}
+      {{else}}–{{end}}
+    </td>
+    <td>
+      <form method="post" action="/control/check" class="inline">
+        <input type="hidden" name="csrf" value="{{$csrf}}">
+        <input type="hidden" name="name" value="{{.Name}}">
+        <button type="submit">Check</button>
+      </form>
+    </td>
+  </tr>
+  {{end}}
+  </tbody>
+</table>
+</div>
+{{end}}
+{{end}}
