@@ -362,12 +362,12 @@ func TestControls(t *testing.T) {
 	want(t, e.sched.Paused() && strings.Contains(b.get("/").text(), "paused"), "pause")
 	b.post("/control/resume", nil)
 	want(t, !e.sched.Paused(), "resume")
-	b.post("/control/dry-run", nil)
-	text := fileText(t, e.config)
-	want(t, e.sched.Settings().DryRun && strings.Contains(text, "dry_run = true"), "%s", text)
-	want(t, strings.Contains(b.get("/").text(), "Dry run on"), "flash")
-	b.post("/control/dry-run", nil)
-	want(t, !e.sched.Settings().DryRun, "toggled back")
+	// Dry run was removed in 0.3.1: no control, nothing about it on the pages.
+	want(t, b.post("/control/dry-run", nil).Code == 404, "dry-run route gone")
+	for _, page := range []string{"/", "/settings", "/activity"} {
+		want(t, !strings.Contains(strings.ToLower(b.get(page).text()), "dry run"), "%s mentions dry run", page)
+	}
+	want(t, !strings.Contains(strings.ToLower(b.get("/settings").text()), "insecure"), "insecure option shown")
 }
 
 func TestRunNowRunsAPassInTheBackground(t *testing.T) {

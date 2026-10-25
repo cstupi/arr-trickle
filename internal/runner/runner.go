@@ -42,13 +42,12 @@ type Prober interface {
 	Status() (map[string]any, error)
 }
 
-// Search is one search command sent (or, in a dry run, not sent).
+// Search is one search command sent.
 type Search struct {
 	Wanted  string   // "missing" or "cutoff"
 	Command string   // e.g. "AlbumSearch"
 	Items   []string // human-readable descriptions of what was searched
 	Cost    int      // approximate queries per indexer
-	DryRun  bool
 }
 
 // Report is what one pass did for one instance.
@@ -77,19 +76,19 @@ func (r *Report) Spent() int {
 }
 
 // RunInstance sends this pass's searches for one instance. Errors are reported, not returned.
-func RunInstance(inst config.Instance, c Client, budget *state.Budget, dryRun bool, now time.Time) *Report {
+func RunInstance(inst config.Instance, c Client, budget *state.Budget, now time.Time) *Report {
 	r := &Report{Name: inst.Name, Kind: inst.Kind}
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	if err := run(inst, c, budget, dryRun, now, r); err != nil {
+	if err := run(inst, c, budget, now, r); err != nil {
 		slog.Warn("run failed", "instance", inst.Name, "err", err)
 		r.Error = err.Error()
 	}
 	return r
 }
 
-func run(inst config.Instance, c Client, budget *state.Budget, dryRun bool, now time.Time, r *Report) error {
+func run(inst config.Instance, c Client, budget *state.Budget, now time.Time, r *Report) error {
 	health, err := c.Health()
 	if err != nil {
 		return err
@@ -164,16 +163,14 @@ func run(inst config.Instance, c Client, budget *state.Budget, dryRun bool, now 
 			if len(names) > 10 {
 				shown += fmt.Sprintf(" (+%d more)", len(names)-10)
 			}
-			slog.Info("search", "instance", inst.Name, "wanted", wanted, "command", cmd["name"], "items", shown, "dry_run", dryRun)
-			if !dryRun {
-				if _, err := c.Command(cmd); err != nil {
-					return err
-				}
-				if err := budget.Add(inst.Name, cost); err != nil {
-					return fmt.Errorf("could not save the daily budget: %w", err)
-				}
+			slog.Info("search", "instance", inst.Name, "wanted", wanted, "command", cmd["name"], "items", shown)
+			if _, err := c.Command(cmd); err != nil {
+				return err
 			}
-			r.Searches = append(r.Searches, Search{Wanted: wanted, Command: fmt.Sprint(cmd["name"]), Items: names, Cost: cost, DryRun: dryRun})
+			if err := budget.Add(inst.Name, cost); err != nil {
+				return fmt.Errorf("could not save the daily budget: %w", err)
+			}
+			r.Searches = append(r.Searches, Search{Wanted: wanted, Command: fmt.Sprint(cmd["name"]), Items: names, Cost: cost})
 			remaining -= cost
 		}
 	}

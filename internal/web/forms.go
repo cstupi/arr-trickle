@@ -20,7 +20,7 @@ import (
 // Form values are only converted to the right type (a numeric string becomes an int); every rule is
 // config.Parse's, so the UI cannot accept anything the file would reject.
 
-var globalFields = []string{"interval_minutes", "log_level", "dry_run", "allow_insecure_http"}
+var globalFields = []string{"interval_minutes", "log_level"}
 
 type keySource struct{ Field, Label string }
 
@@ -50,8 +50,6 @@ type postForm map[string]string
 func applyGlobal(data map[string]any, f postForm) {
 	data["interval_minutes"] = number(f["interval_minutes"])
 	data["log_level"] = f["log_level"]
-	data["dry_run"] = f["dry_run"] == "on"
-	data["allow_insecure_http"] = f["allow_insecure_http"] == "on"
 }
 
 // instanceValues is the form prefill. There is deliberately no field for the key itself: it is write-only.

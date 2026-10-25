@@ -2,7 +2,7 @@
 // size-bounded with one rotated file.
 //
 // Entries hold only what the runner reports (instance name, wanted kind, command, item titles,
-// cost, dry_run), never settings or keys.
+// cost), never settings or keys. Entries written by 0.3.0 may still carry a "dry_run" field; it is ignored.
 package activity
 
 import (
@@ -34,7 +34,6 @@ type Entry struct {
 	Command  string   `json:"command"`
 	Items    []string `json:"items"`
 	Cost     int      `json:"cost"`
-	DryRun   bool     `json:"dry_run"`
 }
 
 // Log is safe for concurrent use.
@@ -70,7 +69,7 @@ func (l *Log) Record(instance string, s runner.Search, now time.Time) {
 	}
 	line, _ := json.Marshal(Entry{
 		Time: now.UTC().Format("2006-01-02T15:04:05+00:00"), Instance: instance, Kind: s.Wanted,
-		Command: s.Command, Items: items, Cost: s.Cost, DryRun: s.DryRun,
+		Command: s.Command, Items: items, Cost: s.Cost,
 	})
 	l.mu.Lock()
 	defer l.mu.Unlock()

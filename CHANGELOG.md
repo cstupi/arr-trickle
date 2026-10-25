@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.1
+
+- Removed dry run: the dashboard toggle, the Settings checkbox, the `dry_run` setting and `DRY_RUN`. Every pass
+  sends its searches. A config that still sets it fails at startup and says it was removed.
+- Removed `allow_insecure_http`: plain http to a public host is always refused (an API key would cross the
+  internet in clear text). The Settings page no longer offers it, and an old config that sets it says so at startup.
+- Activity entries written by 0.3.0 (which carried a `dry_run` field) still display.
+
 ## 0.3.0
 
 - **Rewritten in Go.** arr-trickle is now one static binary, and the image is `FROM scratch` (about 10 MB, no

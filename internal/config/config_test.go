@@ -89,7 +89,8 @@ func TestRejectsBadSettings(t *testing.T) {
 		{with(minimal(nil), "interval_minutes", int64(1)), "between"},
 		{with(minimal(nil), "log_level", "LOUD"), "log_level"},
 		{with(minimal(nil), "log_level", int64(3)), "log_level"},
-		{with(minimal(nil), "dry_run", "yes"), "dry_run must be true or false"},
+		{with(minimal(nil), "dry_run", true), "dry_run was removed"},
+		{with(minimal(nil), "allow_insecure_http", false), "allow_insecure_http was removed"},
 		{with(minimal(nil), "state_dir", ""), "state_dir"},
 		{map[string]any{"sonarr": "nope"}, "table"},
 	}
@@ -124,10 +125,12 @@ func TestPrivateAndPublicHosts(t *testing.T) {
 	}
 }
 
-func TestPlainHTTPToPublicHostRefusedUnlessAllowed(t *testing.T) {
+func TestPlainHTTPToPublicHostAlwaysRefused(t *testing.T) {
 	_, err := Parse(minimal(map[string]any{"url": "http://sonarr.example.com"}), false)
 	wantErr(t, err, "plain http")
-	mustParse(t, with(minimal(map[string]any{"url": "http://sonarr.example.com"}), "allow_insecure_http", true))
+	// There is no setting to override it; the old one is rejected with an explanation.
+	_, err = Parse(with(minimal(map[string]any{"url": "http://sonarr.example.com"}), "allow_insecure_http", true), false)
+	wantErr(t, err, "allow_insecure_http was removed")
 	mustParse(t, minimal(map[string]any{"url": "https://sonarr.example.com"}))
 	_, err = Parse(minimal(map[string]any{"url": "http://[2606:4700::1111]:8989"}), false)
 	wantErr(t, err, "plain http")
@@ -208,7 +211,7 @@ func TestEnvFallback(t *testing.T) {
 	dir := t.TempDir()
 	env := Environ{
 		"SONARR_URL": "http://sonarr:8989", "SONARR_MISSING": "4", "SONARR_EXCLUDE": "134, 135", "SONARR_CONFIG": "/c.xml",
-		"INTERVAL_MINUTES": "15", "DRY_RUN": "yes", "STATE_DIR": dir, "LOG_LEVEL": "debug",
+		"INTERVAL_MINUTES": "15", "STATE_DIR": dir, "LOG_LEVEL": "debug",
 		"RADARR_URL": "http://radarr:7878", "RADARR_API_KEY_FILE": "/run/secrets/radarr",
 		"LIDARR_URL": "http://lidarr:8686",
 	}
@@ -224,7 +227,7 @@ func TestEnvFallback(t *testing.T) {
 	if radarr.APIKeyFile != "/run/secrets/radarr" || lidarr.APIKeyFrom != "/arr/lidarr/config.xml" {
 		t.Fatal(radarr, lidarr)
 	}
-	if s.IntervalMinutes != 15 || !s.DryRun || s.LogLevel != "DEBUG" || s.StateDir != dir {
+	if s.IntervalMinutes != 15 || s.LogLevel != "DEBUG" || s.StateDir != dir {
 		t.Fatal(s)
 	}
 	loaded, err := Load("", env, false) // no file at the default path: the environment is used
@@ -358,7 +361,7 @@ func fullSettings() Settings {
 			{Kind: "radarr", Name: tricky, URL: "http://radarr:7878", APIKeyEnv: "RADARR_KEY", Missing: 5, Cutoff: 2, DailyCap: 50, Exclude: []int{}, TimeoutSeconds: 60},
 			{Kind: "lidarr", Name: "lidarr", URL: "http://10.0.0.5:8686", APIKeyFrom: "/x.xml", Missing: 5, MaxQueue: 9, Exclude: []int{}, TimeoutSeconds: 5},
 		},
-		IntervalMinutes: 15, StateDir: "/data/state", DryRun: true, LogLevel: "DEBUG", AllowInsecureHTTP: true,
+		IntervalMinutes: 15, StateDir: "/data/state", LogLevel: "DEBUG",
 		Web: Web{
 			Enabled: false, Listen: "127.0.0.1", Port: 9000, CookieSecure: true, SessionHours: 2,
 			AllowedNetworks: []string{"192.168.1.0/24", "fd00::/8"}, TrustedProxies: []string{"10.0.0.2/32"},
@@ -444,4 +447,9 @@ func TestErrorFormatting(t *testing.T) {
 	if e.Error() != "first; second" {
 		t.Fatal(e.Error())
 	}
+}
+
+func TestDryRunEnvRejected(t *testing.T) {
+	_, err := FromEnv(Environ{"SONARR_URL": "http://sonarr:8989", "DRY_RUN": "1"})
+	wantErr(t, err, "DRY_RUN was removed")
 }

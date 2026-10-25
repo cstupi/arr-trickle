@@ -40,11 +40,14 @@ func TestSettingsPage(t *testing.T) {
 func TestGlobalSaveIsAtomicKeepsABackupAndHotReloads(t *testing.T) {
 	e, b := web(t)
 	original := fileText(t, e.config)
-	r := b.post("/settings", form("interval_minutes", "15", "log_level", "DEBUG", "dry_run", "on"))
+	// Fields from 0.3.0 (dry run, insecure http) are no longer accepted from the form: they must be ignored.
+	r := b.post("/settings", form("interval_minutes", "15", "log_level", "DEBUG", "dry_run", "on", "allow_insecure_http", "on"))
 	want(t, r.Code == 303 && r.Header().Get("Location") == "/settings", "%d", r.Code)
 	want(t, strings.Contains(b.get("/settings").text(), "Settings saved"), "flash")
 	s := e.sched.Settings()
-	want(t, s.IntervalMinutes == 15 && s.LogLevel == "DEBUG" && s.DryRun && !s.AllowInsecureHTTP, "%+v", s)
+	want(t, s.IntervalMinutes == 15 && s.LogLevel == "DEBUG", "%+v", s)
+	saved := fileText(t, e.config)
+	want(t, !strings.Contains(saved, "dry_run") && !strings.Contains(saved, "allow_insecure_http"), "%s", saved)
 	want(t, fileText(t, e.config+".bak") == original, "backup")
 	loaded, err := config.Load(e.config, config.Environ{}, false)
 	want(t, err == nil && loaded.IntervalMinutes == 15, "%v", err)
@@ -216,7 +219,6 @@ func TestReadOnlyConfigIsExplained(t *testing.T) {
 	want(t, r.Code == 400 && strings.Contains(r.text(), "not writable"), "global")
 	r = b.post("/settings/instances/new", newInstance("api_key", tu.Key))
 	want(t, r.Code == 400 && strings.Contains(r.text(), "not writable"), "instance")
-	want(t, b.post("/control/dry-run", nil).Code == 303 && strings.Contains(b.get("/").text(), "not writable"), "dry run")
 	b.post("/settings/instances/radarr/0/delete", form("name", "radarr"))
 	want(t, strings.Contains(b.get("/settings").text(), "not writable") && e.sched.Settings().IntervalMinutes == 60, "delete")
 }

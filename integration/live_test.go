@@ -257,7 +257,7 @@ func TestFreshAppWithoutIndexersIsSkipped(t *testing.T) {
 		for _, h := range health {
 			has = has || h["source"] == "IndexerSearchCheck"
 		}
-		r := runner.RunInstance(instance(t, kind), c, state.NewBudget(filepath.Join(t.TempDir(), "b.json")), false, time.Time{})
+		r := runner.RunInstance(instance(t, kind), c, state.NewBudget(filepath.Join(t.TempDir(), "b.json")), time.Time{})
 		if !has || !r.OK() || r.Spent() != 0 || r.Skipped == "" {
 			t.Fatal(health, r)
 		}
@@ -271,7 +271,7 @@ func TestEndToEndSearchOfARealMissingItem(t *testing.T) {
 		before := commandIDs(t, c)
 		inst := instance(t, kind)
 		inst.Missing = 1
-		r := runner.RunInstance(inst, withoutNoIndexerHealth{c}, state.NewBudget(filepath.Join(t.TempDir(), "b.json")), false, time.Time{})
+		r := runner.RunInstance(inst, withoutNoIndexerHealth{c}, state.NewBudget(filepath.Join(t.TempDir(), "b.json")), time.Time{})
 		if !r.OK() || r.Spent() < 1 || r.MissingTotal == nil || *r.MissingTotal == 0 {
 			t.Fatal(r)
 		}

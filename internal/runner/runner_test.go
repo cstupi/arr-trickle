@@ -40,30 +40,16 @@ func TestSendsMissingAndRecordsBudget(t *testing.T) {
 	b := budget(t)
 	f := tu.NewFake()
 	f.Missing, f.Cutoff, f.Queue = albums(9), []apps.Record{tu.A(20)}, 2
-	r := RunInstance(inst("lidarr", nil), f, b, false, tu.Now)
+	r := RunInstance(inst("lidarr", nil), f, b, tu.Now)
 	if r.Spent() != 3 || !r.OK() || r.Skipped != "" {
 		t.Fatal(r)
 	}
 	if !reflect.DeepEqual(f.Sent(), []map[string]any{{"name": "AlbumSearch", "albumIds": []int{1, 2, 3}}}) || b.Used("lidarr") != 3 {
 		t.Fatal(f.Sent())
 	}
-	want := []Search{{"missing", "AlbumSearch", []string{"X - A1", "X - A2", "X - A3"}, 3, false}}
+	want := []Search{{"missing", "AlbumSearch", []string{"X - A1", "X - A2", "X - A3"}, 3}}
 	if !reflect.DeepEqual(r.Searches, want) || *r.MissingTotal != 9 || *r.CutoffTotal != 1 || *r.Queue != 2 {
 		t.Fatal(r.Searches)
-	}
-}
-
-func TestDryRunSendsNothing(t *testing.T) {
-	logs := tu.CaptureLogs(t)
-	b := budget(t)
-	f := tu.NewFake()
-	f.Missing = []apps.Record{tu.A(1)}
-	r := RunInstance(inst("lidarr", nil), f, b, true, tu.Now)
-	if !r.Searches[0].DryRun || r.Spent() != 1 || len(f.Sent()) != 0 || b.Used("lidarr") != 0 {
-		t.Fatal(r)
-	}
-	if !strings.Contains(logs.String(), "dry_run=true") {
-		t.Fatal(logs.String())
 	}
 }
 
@@ -71,12 +57,12 @@ func TestSkipsWhenIndexerUnhealthy(t *testing.T) {
 	f := tu.NewFake()
 	f.Missing = []apps.Record{tu.A(1)}
 	f.HealthItems = []map[string]any{{"source": "IndexerStatusCheck", "message": "down"}}
-	r := RunInstance(inst("lidarr", nil), f, budget(t), false, tu.Now)
+	r := RunInstance(inst("lidarr", nil), f, budget(t), tu.Now)
 	if r.Spent() != 0 || r.Skipped != "down" || !reflect.DeepEqual(r.Health, []string{"down"}) || *r.MissingTotal != 1 || len(f.Sent()) != 0 {
 		t.Fatal(r)
 	}
 	f.HealthItems = []map[string]any{{"source": "DownloadClientCheck"}}
-	if r := RunInstance(inst("lidarr", nil), f, budget(t), false, tu.Now); r.Skipped != "DownloadClientCheck" {
+	if r := RunInstance(inst("lidarr", nil), f, budget(t), tu.Now); r.Skipped != "DownloadClientCheck" {
 		t.Fatal("a message-less health item is named by its source")
 	}
 }
@@ -85,7 +71,7 @@ func TestIgnoresUnrelatedHealthWarnings(t *testing.T) {
 	f := tu.NewFake()
 	f.Missing = []apps.Record{tu.A(1)}
 	f.HealthItems = []map[string]any{{"source": "UpdateCheck", "message": "update"}}
-	if RunInstance(inst("lidarr", nil), f, budget(t), false, tu.Now).Spent() != 1 {
+	if RunInstance(inst("lidarr", nil), f, budget(t), tu.Now).Spent() != 1 {
 		t.Fatal("unrelated warnings must not block")
 	}
 }
@@ -93,7 +79,7 @@ func TestIgnoresUnrelatedHealthWarnings(t *testing.T) {
 func TestSkipsWhenQueueFull(t *testing.T) {
 	f := tu.NewFake()
 	f.Missing, f.Queue = []apps.Record{tu.A(1)}, 50
-	r := RunInstance(inst("lidarr", func(i *config.Instance) { i.MaxQueue = 50 }), f, budget(t), false, tu.Now)
+	r := RunInstance(inst("lidarr", func(i *config.Instance) { i.MaxQueue = 50 }), f, budget(t), tu.Now)
 	if r.Spent() != 0 || !strings.Contains(r.Skipped, "queue") {
 		t.Fatal(r)
 	}
@@ -104,8 +90,8 @@ func TestDailyCapLimitsAcrossRunsAndRestarts(t *testing.T) {
 	f := tu.NewFake()
 	f.Missing, f.Cutoff = albums(9), []apps.Record{tu.A(20)}
 	i := inst("lidarr", func(i *config.Instance) { i.Missing, i.Cutoff, i.DailyCap = 3, 1, 4 })
-	RunInstance(i, f, b, false, tu.Now)
-	third := RunInstance(i, f, state.NewBudget(b.Path()), false, tu.Now)
+	RunInstance(i, f, b, tu.Now)
+	third := RunInstance(i, f, state.NewBudget(b.Path()), tu.Now)
 	total := 0
 	for _, c := range f.Sent() {
 		total += planner.QueryCost(c)
@@ -113,7 +99,7 @@ func TestDailyCapLimitsAcrossRunsAndRestarts(t *testing.T) {
 	if total != 4 || !third.OK() {
 		t.Fatal(total, third)
 	}
-	if r := RunInstance(i, f, state.NewBudget(b.Path()), false, tu.Now); !strings.Contains(r.Skipped, "daily cap") {
+	if r := RunInstance(i, f, state.NewBudget(b.Path()), tu.Now); !strings.Contains(r.Skipped, "daily cap") {
 		t.Fatal(r)
 	}
 }
@@ -121,7 +107,7 @@ func TestDailyCapLimitsAcrossRunsAndRestarts(t *testing.T) {
 func TestCutoffSkipsProfilesWithoutUpgrades(t *testing.T) {
 	f := tu.For("radarr")
 	f.Cutoff, f.Profiles = []apps.Record{tu.Movie(1, true, 4)}, map[int]bool{}
-	if RunInstance(inst("radarr", func(i *config.Instance) { i.Missing, i.Cutoff = 0, 2 }), f, budget(t), false, tu.Now).Spent() != 0 {
+	if RunInstance(inst("radarr", func(i *config.Instance) { i.Missing, i.Cutoff = 0, 2 }), f, budget(t), tu.Now).Spent() != 0 {
 		t.Fatal("no profile allows upgrades")
 	}
 }
@@ -132,7 +118,7 @@ func TestSonarrSeasonSearchAndLongLogLine(t *testing.T) {
 	for i := 1; i < 15; i++ {
 		f.Missing = append(f.Missing, tu.E(i, 1))
 	}
-	r := RunInstance(inst("sonarr", func(i *config.Instance) { i.Missing = 1 }), f, budget(t), false, tu.Now)
+	r := RunInstance(inst("sonarr", func(i *config.Instance) { i.Missing = 1 }), f, budget(t), tu.Now)
 	if r.Spent() != 1 || !reflect.DeepEqual(f.Sent(), []map[string]any{{"name": "SeasonSearch", "seriesId": 10, "seasonNumber": 1}}) {
 		t.Fatal(f.Sent())
 	}
@@ -146,7 +132,7 @@ func TestErrorsMidPassAreReportedWithWhatWasSent(t *testing.T) {
 	f := tu.NewFake()
 	f.Missing, f.Cutoff = []apps.Record{tu.A(1)}, []apps.Record{tu.A(2)}
 	f.Err["profiles"] = &client.Error{Msg: "GET /qualityprofile: HTTP 500"}
-	r := RunInstance(inst("lidarr", func(i *config.Instance) { i.Cutoff = 1 }), f, budget(t), false, tu.Now)
+	r := RunInstance(inst("lidarr", func(i *config.Instance) { i.Cutoff = 1 }), f, budget(t), tu.Now)
 	if r.OK() || !strings.Contains(r.Error, "HTTP 500") || len(r.Searches) != 1 || r.Searches[0].Command != "AlbumSearch" {
 		t.Fatal(r)
 	}
@@ -160,7 +146,7 @@ func TestEveryClientFailureIsReported(t *testing.T) {
 		f := tu.NewFake()
 		f.Missing = []apps.Record{tu.A(1)}
 		f.Err[method] = errors.New(method + " broke")
-		if r := RunInstance(inst("lidarr", nil), f, budget(t), false, tu.Now); !strings.Contains(r.Error, method) {
+		if r := RunInstance(inst("lidarr", nil), f, budget(t), tu.Now); !strings.Contains(r.Error, method) {
 			t.Errorf("%s: %+v", method, r)
 		}
 	}

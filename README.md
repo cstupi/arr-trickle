@@ -29,7 +29,7 @@ services:
 - A pass every **60 minutes**, starting at launch.
 - Per app and pass: **5 missing** items (Sonarr: 5 seasons), **0 upgrades**, **no daily cap**.
 - An app is skipped while its indexers or download client are unhealthy.
-- Searches go out for real; turn on **Dry run** to only log them.
+- The activity log (`/state/activity.jsonl`) rotates itself at 1 MiB, keeping one older file.
 - Web UI on port **8790**, open to loopback and private networks only; sessions last 12 hours.
 
 All settings: [`examples/config.toml`](examples/config.toml).

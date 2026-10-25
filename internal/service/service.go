@@ -30,7 +30,7 @@ type InstanceStatus struct {
 
 // Snapshot is the scheduler's state at one moment.
 type Snapshot struct {
-	Paused, DryRun  bool
+	Paused          bool
 	Running         bool // a pass is in progress
 	IntervalMinutes int
 	LastPass        time.Time
@@ -171,7 +171,7 @@ func (s *Scheduler) RunPass() []*runner.Report {
 	}()
 	reports := make([]*runner.Report, 0, len(settings.Instances))
 	for _, inst := range settings.Instances {
-		reports = append(reports, s.runOne(inst, settings.DryRun))
+		reports = append(reports, s.runOne(inst))
 	}
 	return reports
 }
@@ -182,13 +182,13 @@ func (s *Scheduler) beat() {
 	}
 }
 
-func (s *Scheduler) runOne(inst config.Instance, dryRun bool) *runner.Report {
+func (s *Scheduler) runOne(inst config.Instance) *runner.Report {
 	r := &runner.Report{Name: inst.Name, Kind: inst.Kind}
 	if c, err := s.factory(inst); err != nil {
 		slog.Warn("run failed", "instance", inst.Name, "err", err)
 		r.Error = err.Error()
 	} else {
-		r = runner.RunInstance(inst, c, s.Budget, dryRun, time.Time{})
+		r = runner.RunInstance(inst, c, s.Budget, time.Time{})
 	}
 	for _, search := range r.Searches {
 		s.Activity.Record(inst.Name, search, time.Time{})
@@ -264,7 +264,7 @@ func (s *Scheduler) Snapshot() Snapshot {
 	paused, next := s.Paused(), s.nextTick()
 	s.mu.Lock()
 	settings, reports := s.settings, maps.Clone(s.reports)
-	snap := Snapshot{Paused: paused, DryRun: settings.DryRun, Running: s.running, IntervalMinutes: settings.IntervalMinutes, LastPass: s.lastPass}
+	snap := Snapshot{Paused: paused, Running: s.running, IntervalMinutes: settings.IntervalMinutes, LastPass: s.lastPass}
 	s.mu.Unlock()
 	if !paused {
 		snap.NextPass = time.Now()

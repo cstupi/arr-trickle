@@ -82,14 +82,13 @@ func TestRunPassRecordsActivityStatusAndHeartbeat(t *testing.T) {
 	}
 }
 
-func TestDryRunPassIsLoggedAsDryRun(t *testing.T) {
+func TestPassSendsSearchesAndLogsThem(t *testing.T) {
 	c := newClients()
-	st := settings(t.TempDir())
-	st.DryRun = true
-	s := New(st, c.factory, nil)
+	s := New(settings(t.TempDir()), c.factory, nil)
 	s.RunPass()
-	if len(c.made["lidarr"].Sent()) != 0 || !s.Activity.Entries("")[0].DryRun || !s.Snapshot().DryRun {
-		t.Fatal("dry run")
+	sent, entries := c.made["lidarr"].Sent(), s.Activity.Entries("lidarr")
+	if len(sent) == 0 || len(entries) != len(sent) || entries[0].Cost == 0 {
+		t.Fatal(sent, entries)
 	}
 }
 

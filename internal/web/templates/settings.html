@@ -53,8 +53,6 @@
         </select>
         {{range index .Errors "log_level"}}<span class="error">{{.}}</span>{{end}}</label>
     </div>
-    <label class="check"><input type="checkbox" name="dry_run"{{if index .Values "dry_run"}} checked{{end}}> Dry run: log what would be searched, send nothing</label>
-    <label class="check"><input type="checkbox" name="allow_insecure_http"{{if index .Values "allow_insecure_http"}} checked{{end}}> Allow plain http to public hosts (not recommended)</label>
     <div class="row"><button type="submit">Save</button></div>
     <p class="hint">Saved to <code>{{.Path}}</code>; the previous version is kept as <code>config.toml.bak</code>.
     Comments written by hand in that file are not preserved when you save from here.</p>
