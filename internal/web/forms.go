@@ -121,7 +121,9 @@ func splitErrors(err error, prefix string) (fieldErrors, []string) {
 		case isKeySource(name) || name == "api_key":
 			name = "key_ref"
 		}
-		byField[name] = append(byField[name], fe.Msg)
+		// Next to its field, "sonarr[1].missing must be ..." reads better as "Must be ...".
+		msg := strings.TrimLeft(strings.TrimPrefix(strings.TrimPrefix(fe.Msg, fe.Where), prefix), ": ")
+		byField[name] = append(byField[name], capitalize(msg))
 	}
 	return byField, general
 }

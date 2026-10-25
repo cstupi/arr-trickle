@@ -1,15 +1,18 @@
 {{define "title"}}First-run setup{{end}}
 {{define "content"}}
-<h1>Create the admin account</h1>
-<p>Enter the setup code printed in the container log (<code>docker compose logs arr-trickle</code>).
-There are no default credentials; this page disappears once the account exists.</p>
-{{with .Error}}<p class="error">{{.}}</p>{{end}}
-<form method="post" action="/setup" class="narrow">
-  <input type="hidden" name="csrf" value="{{.CSRF}}">
-  <label>Setup code <input name="code" required autocomplete="off" maxlength="64"></label>
-  <label>Username <input name="username" required maxlength="64" autocomplete="username" value="{{.Username}}"></label>
-  <label>Password (at least 12 characters) <input name="password" type="password" required minlength="12" maxlength="1024" autocomplete="new-password"></label>
-  <label>Repeat password <input name="confirm" type="password" required minlength="12" maxlength="1024" autocomplete="new-password"></label>
-  <button type="submit">Create account</button>
-</form>
+<div class="auth card">
+  <h1>Create the admin account</h1>
+  <p class="hint">Enter the setup code from the container log (<code>docker compose logs arr-trickle</code>).
+  There are no default credentials, and this page disappears once the account exists.</p>
+  {{with .Error}}<p class="error">{{.}}</p>{{end}}
+  <form method="post" action="/setup" class="stack">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <label class="field"><span>Setup code</span><input name="code" required autocomplete="off" maxlength="64" placeholder="XXXXX-XXXXX-XXXXX-XXXXX" autofocus></label>
+    <label class="field"><span>Username</span><input name="username" required maxlength="64" autocomplete="username" value="{{.Username}}"></label>
+    <label class="field"><span>Password</span><input name="password" type="password" required minlength="12" maxlength="1024" autocomplete="new-password">
+      <small>At least 12 characters.</small></label>
+    <label class="field"><span>Repeat password</span><input name="confirm" type="password" required minlength="12" maxlength="1024" autocomplete="new-password"></label>
+    <button type="submit">Create account</button>
+  </form>
+</div>
 {{end}}

@@ -315,6 +315,7 @@ func parseTemplates() map[string]*template.Template {
 			return strconv.Itoa(*p)
 		},
 		"join":       strings.Join,
+		"hasPrefix":  strings.HasPrefix,
 		"capitalize": capitalize,
 		"port":       func(kind string) int { return map[string]int{"sonarr": 8989, "radarr": 7878, "lidarr": 8686}[kind] },
 		"owner": func(kind string) string {
@@ -334,7 +335,7 @@ func parseTemplates() map[string]*template.Template {
 
 func (s *Server) render(w http.ResponseWriter, r *http.Request, name string, status int, data map[string]any) {
 	st := stateOf(r)
-	base := map[string]any{"CSRF": "", "Authenticated": false, "Flash": []string(nil), "Version": version.Version}
+	base := map[string]any{"CSRF": "", "Authenticated": false, "Flash": []string(nil), "Version": version.Version, "Path": r.URL.Path}
 	if st.session != nil {
 		base["CSRF"], base["Authenticated"], base["Flash"] = st.session.csrf, st.session.authenticated(), s.sessions.takeFlash(st.session)
 	}

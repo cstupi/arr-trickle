@@ -1,73 +1,75 @@
 {{define "title"}}Settings{{end}}
 {{define "content"}}
-<h1>Settings</h1>
-<p class="hint">Saved to <code>{{.Path}}</code> (the previous file is kept as <code>config.toml.bak</code>).
-Hand-written comments in that file are not preserved when you save from here.</p>
+<div class="page-head"><h1>Settings</h1></div>
 {{with .Problem}}<p class="error">Saving is unavailable: {{.}}</p>{{end}}
 {{range .General}}<p class="error">{{.}}</p>{{end}}
 
-<h2>General</h2>
-<form method="post" action="/settings" class="narrow">
-  <input type="hidden" name="csrf" value="{{.CSRF}}">
-  <label>Minutes between passes (5-1440)
-    <input name="interval_minutes" value="{{index .Values "interval_minutes"}}" inputmode="numeric" maxlength="20"></label>
-  {{range index .Errors "interval_minutes"}}<span class="error">{{.}}</span>{{end}}
-  <label>Log level
-    <select name="log_level">
-      {{$level := index .Values "log_level"}}
-      {{range .LogLevels}}<option{{if eq . $level}} selected{{end}}>{{.}}</option>{{end}}
-    </select></label>
-  {{range index .Errors "log_level"}}<span class="error">{{.}}</span>{{end}}
-  <label class="check"><input type="checkbox" name="dry_run"{{if index .Values "dry_run"}} checked{{end}}> Dry run: log what would be searched, send nothing</label>
-  <label class="check"><input type="checkbox" name="allow_insecure_http"{{if index .Values "allow_insecure_http"}} checked{{end}}> Allow plain http to public hosts (not recommended)</label>
-  {{range index .Errors "allow_insecure_http"}}<span class="error">{{.}}</span>{{end}}
-  <button type="submit">Save</button>
-</form>
-
 <h2>Instances</h2>
-{{if not .Rows}}<p>None yet.</p>{{else}}
-<div class="scroll">
-<table>
-  <thead><tr><th>Name</th><th>App</th><th>URL</th><th>API key from</th><th>Missing / cutoff per pass</th><th>Daily cap</th><th></th></tr></thead>
-  <tbody>
+{{if not .Rows}}<div class="card"><p class="muted">None yet. Add your first app below.</p></div>{{else}}
+<div class="cards">
   {{$csrf := .CSRF}}
   {{range .Rows}}
-  <tr>
-    <td>{{.Name}}</td>
-    <td>{{.Kind}}</td>
-    <td>{{.URL}}</td>
-    <td>
-      {{if .APIKeyFrom}}config.xml: <code>{{.APIKeyFrom}}</code>
-      {{else if .APIKeyFile}}{{if .Managed}}key stored from the UI{{else}}file: <code>{{.APIKeyFile}}</code>{{end}}
-      {{else}}env: <code>{{.APIKeyEnv}}</code>{{end}}
-    </td>
-    <td>{{.Missing}} / {{.Cutoff}}</td>
-    <td>{{if .DailyCap}}{{.DailyCap}}{{else}}none{{end}}</td>
-    <td>
-      <a href="/settings/instances/{{.Kind}}/{{.Index}}">Edit</a>
+  <article class="card">
+    <div class="card-head">
+      <div><h3>{{.Name}}</h3><small>{{.Kind}} · {{.URL}}</small></div>
+    </div>
+    <dl class="facts">
+      <dt>API key</dt>
+      <dd>{{if .APIKeyFrom}}config.xml <code>{{.APIKeyFrom}}</code>
+        {{else if .APIKeyFile}}{{if .Managed}}stored from the UI{{else}}file <code>{{.APIKeyFile}}</code>{{end}}
+        {{else}}env <code>{{.APIKeyEnv}}</code>{{end}}</dd>
+      <dt>Per pass</dt><dd>{{.Missing}} missing, {{.Cutoff}} upgrade(s)</dd>
+      <dt>Daily cap</dt><dd>{{if .DailyCap}}{{.DailyCap}} searches{{else}}none{{end}}</dd>
+    </dl>
+    <div class="row mt">
+      <a class="button secondary small" href="/settings/instances/{{.Kind}}/{{.Index}}">Edit</a>
       <form method="post" action="/settings/instances/{{.Kind}}/{{.Index}}/delete" class="inline">
         <input type="hidden" name="csrf" value="{{$csrf}}">
         <input type="hidden" name="name" value="{{.Name}}">
-        <button type="submit" class="danger">Remove</button>
+        <button type="submit" class="danger small">Remove</button>
       </form>
-    </td>
-  </tr>
+    </div>
+  </article>
   {{end}}
-  </tbody>
-</table>
 </div>
 {{end}}
-<p>Add:
-  {{range .Kinds}}<a class="button" href="/settings/instances/new?kind={{.}}">{{capitalize .}}</a> {{end}}
+<p class="row mt">
+  {{range .Kinds}}<a class="button secondary" href="/settings/instances/new?kind={{.}}">+ {{capitalize .}}</a>{{end}}
 </p>
 
+<h2>General</h2>
+<div class="card form">
+  <form method="post" action="/settings" class="stack">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <div class="grid2">
+      <label class="field"><span>Minutes between passes</span>
+        <input name="interval_minutes" value="{{index .Values "interval_minutes"}}" inputmode="numeric" maxlength="20">
+        <small>5 to 1440.</small>
+        {{range index .Errors "interval_minutes"}}<span class="error">{{.}}</span>{{end}}</label>
+      <label class="field"><span>Log level</span>
+        <select name="log_level">
+          {{$level := index .Values "log_level"}}
+          {{range .LogLevels}}<option{{if eq . $level}} selected{{end}}>{{.}}</option>{{end}}
+        </select>
+        {{range index .Errors "log_level"}}<span class="error">{{.}}</span>{{end}}</label>
+    </div>
+    <label class="check"><input type="checkbox" name="dry_run"{{if index .Values "dry_run"}} checked{{end}}> Dry run: log what would be searched, send nothing</label>
+    <label class="check"><input type="checkbox" name="allow_insecure_http"{{if index .Values "allow_insecure_http"}} checked{{end}}> Allow plain http to public hosts (not recommended)</label>
+    <div class="row"><button type="submit">Save</button></div>
+    <p class="hint">Saved to <code>{{.Path}}</code>; the previous version is kept as <code>config.toml.bak</code>.
+    Comments written by hand in that file are not preserved when you save from here.</p>
+  </form>
+</div>
+
 <h2>Edited only in the file</h2>
-<p class="hint">These need a restart and could lock you out, so the UI shows them but does not change them.</p>
-<dl>
-  <dt>State directory</dt><dd><code>{{.Settings.StateDir}}</code></dd>
-  <dt>Web UI</dt><dd>{{.Settings.Web.Listen}}:{{.Settings.Web.Port}}, sessions {{.Settings.Web.SessionHours}} h,
-    secure cookie {{if .Settings.Web.CookieSecure}}always{{else}}over https{{end}}</dd>
-  <dt>Allowed networks</dt><dd>{{join .Settings.Web.AllowedNetworks ", "}}</dd>
-  <dt>Trusted proxies</dt><dd>{{with .Settings.Web.TrustedProxies}}{{join . ", "}}{{else}}none{{end}}</dd>
-</dl>
+<div class="card">
+  <p class="hint">These need a restart and could lock you out, so the UI shows them but doesn't change them.</p>
+  <dl class="facts mt">
+    <dt>State directory</dt><dd><code>{{.Settings.StateDir}}</code></dd>
+    <dt>Web UI</dt><dd>{{.Settings.Web.Listen}}:{{.Settings.Web.Port}}, sessions {{.Settings.Web.SessionHours}} h,
+      secure cookie {{if .Settings.Web.CookieSecure}}always{{else}}over https{{end}}</dd>
+    <dt>Allowed networks</dt><dd>{{join .Settings.Web.AllowedNetworks ", "}}</dd>
+    <dt>Trusted proxies</dt><dd>{{with .Settings.Web.TrustedProxies}}{{join . ", "}}{{else}}none{{end}}</dd>
+  </dl>
+</div>
 {{end}}

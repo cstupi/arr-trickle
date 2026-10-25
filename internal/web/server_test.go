@@ -326,10 +326,10 @@ func TestForwardedForOnlyFromTrustedProxies(t *testing.T) {
 
 func TestDashboardStatusAfterAPass(t *testing.T) {
 	e, b := web(t)
-	want(t, strings.Contains(b.get("/").text(), "not checked yet"), "before")
+	want(t, strings.Contains(b.get("/").text(), "Not checked yet"), "before")
 	e.sched.RunPass()
 	page := b.get("/").text()
-	want(t, strings.Contains(page, "radarr") && strings.Contains(page, "1 search(es)") && strings.Contains(page, ">ok<"), "%s", page)
+	want(t, strings.Contains(page, "radarr") && strings.Contains(page, "1 search(es)") && strings.Contains(page, "Healthy"), "%s", page)
 }
 
 func TestDashboardShowsErrorsAndSkips(t *testing.T) {
@@ -338,7 +338,7 @@ func TestDashboardShowsErrorsAndSkips(t *testing.T) {
 	b := e.browser(lanIP).login()
 	e.sched.RunPass()
 	page := b.get("/").text()
-	want(t, strings.Contains(page, "unreachable") && strings.Contains(page, "UNSET_FOR_TEST is empty"), "%s", page)
+	want(t, strings.Contains(page, "Unreachable") && strings.Contains(page, "UNSET_FOR_TEST is empty"), "%s", page)
 }
 
 func TestDashboardWithNoInstances(t *testing.T) {

@@ -33,7 +33,7 @@ func after(html, field string) string {
 func TestSettingsPage(t *testing.T) {
 	e, b := web(t)
 	page := b.get("/settings").text()
-	want(t, strings.Contains(page, "radarr") && strings.Contains(page, e.config) && strings.Contains(page, "comments in that file are not preserved"), "page")
+	want(t, strings.Contains(page, "radarr") && strings.Contains(page, e.config) && strings.Contains(page, "not preserved"), "page")
 	want(t, !strings.Contains(page, "Saving is unavailable"), "writable")
 }
 
@@ -57,10 +57,10 @@ func TestGlobalSaveIsAtomicKeepsABackupAndHotReloads(t *testing.T) {
 
 func TestGlobalValidationErrors(t *testing.T) {
 	cases := []struct{ interval, level, msg, field string }{
-		{"abc", "INFO", "interval_minutes must be an integer", "interval_minutes"},
-		{"1", "INFO", "interval_minutes must be between 5 and 1440", "interval_minutes"},
-		{"", "INFO", "interval_minutes must be an integer", "interval_minutes"},
-		{"60", "LOUD", "log_level must be one of", "log_level"},
+		{"abc", "INFO", "Must be an integer", "interval_minutes"},
+		{"1", "INFO", "Must be between 5 and 1440", "interval_minutes"},
+		{"", "INFO", "Must be an integer", "interval_minutes"},
+		{"60", "LOUD", "Must be one of", "log_level"},
 	}
 	for _, c := range cases {
 		e, b := web(t)
@@ -106,21 +106,21 @@ func TestBlankNameGetsTheDefault(t *testing.T) {
 
 func TestInstanceValidationErrorsAreShownNextToFields(t *testing.T) {
 	cases := []struct{ field, value, at, msg string }{
-		{"url", "ftp://sonarr", "url", "must be an http:// or https:// URL"},
-		{"url", "http://user:pw@sonarr:8989", "url", "must not contain credentials"},
-		{"url", "http://sonarr.example.com", "url", "refusing to send an API key over plain http"},
-		{"url", "", "url", "must be a non-empty string"},
-		{"missing", "lots", "missing", "missing must be an integer"},
-		{"missing", "101", "missing", "missing must be between 0 and 100"},
-		{"cutoff", "-1", "cutoff", "cutoff must be between 0 and 100"},
-		{"daily_cap", "1.5", "daily_cap", "daily_cap must be an integer"},
-		{"max_queue", "100001", "max_queue", "max_queue must be between"},
-		{"timeout_seconds", "1", "timeout_seconds", "timeout_seconds must be between 5 and 600"},
-		{"exclude", "1, x", "exclude", "exclude must be a list of positive integer ids"},
-		{"exclude", "0", "exclude", "exclude must be a list of positive integer ids"},
-		{"key_ref", " ", "key_ref", "must be a non-empty string"},
-		{"key_source", "api_key_raw", "key_ref", "set exactly one of"},
-		{"name", "radarr", "name", "duplicate instance name(s): radarr"},
+		{"url", "ftp://sonarr", "url", "Must be an http:// or https:// URL"},
+		{"url", "http://user:pw@sonarr:8989", "url", "Must not contain credentials"},
+		{"url", "http://sonarr.example.com", "url", "Refusing to send an API key over plain http"},
+		{"url", "", "url", "Must be a non-empty string"},
+		{"missing", "lots", "missing", "Must be an integer"},
+		{"missing", "101", "missing", "Must be between 0 and 100"},
+		{"cutoff", "-1", "cutoff", "Must be between 0 and 100"},
+		{"daily_cap", "1.5", "daily_cap", "Must be an integer"},
+		{"max_queue", "100001", "max_queue", "Must be between"},
+		{"timeout_seconds", "1", "timeout_seconds", "Must be between 5 and 600"},
+		{"exclude", "1, x", "exclude", "Must be a list of positive integer ids"},
+		{"exclude", "0", "exclude", "Must be a list of positive integer ids"},
+		{"key_ref", " ", "key_ref", "Must be a non-empty string"},
+		{"key_source", "api_key_raw", "key_ref", "Set exactly one of"},
+		{"name", "radarr", "name", "Duplicate instance name(s): radarr"},
 		{"api_key", "tooshort", "api_key", "unexpected format"},
 	}
 	for _, c := range cases {
@@ -140,7 +140,7 @@ func TestSeveralErrorsAtOnce(t *testing.T) {
 	_, b := web(t)
 	r := b.post("/settings/instances/new", newInstance("missing", "-1", "cutoff", "x", "url", "ftp://x"))
 	text := r.text()
-	want(t, r.Code == 400 && strings.Contains(text, "missing must be between") && strings.Contains(text, "cutoff must be an integer") && strings.Contains(text, "http://"), "all shown")
+	want(t, r.Code == 400 && strings.Contains(text, "Must be between") && strings.Contains(text, "Must be an integer") && strings.Contains(text, "http://"), "all shown")
 }
 
 func TestInvalidFormKeepsWhatWasTyped(t *testing.T) {
@@ -163,8 +163,8 @@ func TestWriteOnlyAPIKey(t *testing.T) {
 	want(t, s.APIKeyFile == keyFile && s.APIKeyEnv == "" && key == tu.Key, "%+v", s)
 	want(t, !strings.Contains(fileText(t, e.config), tu.Key), "not in config.toml")
 	edit := b.get("/settings/instances/sonarr/0").text()
-	want(t, !strings.Contains(edit, tu.Key) && strings.Contains(edit, `type="password" value=""`) && strings.Contains(edit, "uses a key you entered here"), "edit page")
-	want(t, strings.Contains(b.get("/settings").text(), "key stored from the UI"), "settings list")
+	want(t, !strings.Contains(edit, tu.Key) && strings.Contains(edit, `type="password" value=""`) && strings.Contains(edit, "Uses a key you entered here"), "edit page")
+	want(t, strings.Contains(b.get("/settings").text(), "stored from the UI"), "settings list")
 	ref := keyRefRE.FindStringSubmatch(edit)[1]
 	// saving again without a key keeps the stored one
 	r = b.post("/settings/instances/sonarr/0", newInstance("original_name", "sonarr", "key_source", "api_key_file", "key_ref", ref, "missing", "7"))
