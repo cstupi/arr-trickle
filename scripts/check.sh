@@ -3,4 +3,4 @@
 set -eu
 cd "$(dirname "$0")/.."
 exec docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -e GOPATH=/tmp/go -e GOCACHE=/tmp/go-cache \
-    -v "$PWD":/src -w /src golang:1.26.10 scripts/test.sh
+    -v "$PWD":/src -w /src golang:1.27.3 scripts/test.sh
