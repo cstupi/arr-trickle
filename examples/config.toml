@@ -1,0 +1,38 @@
+# arr-trickle settings. Mount at /config/config.toml (or set ARR_TRICKLE_CONFIG).
+# Unknown keys are rejected at startup, so typos fail loudly instead of being ignored.
+# This file holds no secrets: each instance names where its API key is read from.
+
+interval_minutes = 60        # 5-1440; one pass over every instance per interval
+# dry_run = true             # log what would be searched, send nothing
+# log_level = "INFO"         # DEBUG, INFO, WARNING, ERROR
+# state_dir = "/state"       # daily budget counter and heartbeat
+# allow_insecure_http = false  # plain http is only allowed to private/LAN/container hosts
+
+[[sonarr]]
+url = "http://sonarr:8989"
+api_key_from = "/arr/sonarr/config.xml"   # the app's own config.xml, mounted read-only
+missing = 4        # seasons per pass (one SeasonSearch each, so season packs are found)
+cutoff = 2         # upgrade searches per pass (only for profiles that allow upgrades)
+# daily_cap = 0    # max searches per UTC day for this instance (0 = no cap)
+# max_queue = 0    # skip while the download queue holds at least this many items
+# exclude = [134, 135]   # series ids never to search
+# timeout_seconds = 60
+
+# A second instance of the same app is just another table; give each a unique name.
+# [[sonarr]]
+# name = "sonarr-4k"
+# url = "https://sonarr4k.example.com"
+# api_key_file = "/run/secrets/sonarr4k"   # e.g. a Docker secret (chmod 600)
+
+[[radarr]]
+url = "http://radarr:7878"
+api_key_from = "/arr/radarr/config.xml"
+missing = 2
+cutoff = 1
+
+[[lidarr]]
+url = "http://lidarr:8686"
+api_key_env = "LIDARR_API_KEY"   # or read the key from an environment variable
+missing = 6
+cutoff = 2
+daily_cap = 190    # e.g. a 300/day indexer limit minus ~96 RSS queries

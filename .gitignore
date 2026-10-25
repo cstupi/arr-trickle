@@ -1,0 +1,44 @@
+# --- Secrets: never commit these ---------------------------------------------
+# arr-trickle reads API keys from the *arr apps at run time; nothing secret belongs in git.
+.env
+.env.*
+*.env
+secrets/
+*.key
+*.pem
+*.p12
+*.pfx
+# an *arr app's config.xml contains its API key
+config.xml
+# your real settings and state (examples/config.toml is the committed template)
+config.toml
+!examples/config.toml
+budget.json
+heartbeat
+*.tmp
+
+# --- Python ----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# --- Tooling ---------------------------------------------------------------
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Editors / OS ----------------------------------------------------------
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+@eaDir/

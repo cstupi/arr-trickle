@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 6 * * 1"  # weekly: catch *arr API changes in new upstream releases
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  secrets:
+    # Scans the full git history, so a key committed and later "removed" still fails the build.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - run: docker run --rm -v "$PWD":/repo zricethezav/gitleaks:v8.21.2 git /repo --no-banner --redact -v
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev]"
+      - run: ruff format --check src tests
+      - run: ruff check --output-format=github src tests
+      - run: mypy
+
+  unit:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install -e ".[dev]"
+      - run: pytest --cov --cov-report=term-missing
+
+  integration:
+    # Real Sonarr/Radarr/Lidarr in throwaway containers: catches upstream API drift.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: scripts/integration.sh
+
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: docker build -t arr-trickle:ci .
+      - name: Image runs, rejects bad config, accepts the example
+        run: |
+          docker run --rm arr-trickle:ci --version
+          docker run --rm -v "$PWD/examples/config.toml:/config/config.toml:ro" -e LIDARR_API_KEY=fakefakefakefakefakefakefakefake \
+            --entrypoint python3 arr-trickle:ci -I -c "from arr_trickle.config import load; load('/config/config.toml')"
+          ! docker run --rm -e SONARR_URL=ftp://x arr-trickle:ci validate
+      - name: Scan image for vulnerabilities
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: arr-trickle:ci
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
