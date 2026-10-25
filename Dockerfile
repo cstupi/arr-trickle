@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # Build: a static Go binary. Pinned toolchain; Dependabot proposes updates (see .github/dependabot.yml).
-FROM --platform=$BUILDPLATFORM golang:1.26.10-alpine3.24 AS build
+FROM --platform=$BUILDPLATFORM golang:1.27.2-alpine3.24 AS build
 ARG TARGETOS TARGETARCH
 WORKDIR /src
 COPY go.mod go.sum ./
