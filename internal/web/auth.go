@@ -9,14 +9,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
+	"io/fs"
+	"maps"
+	"net/netip"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"golang.org/x/crypto/scrypt"
 
@@ -26,25 +29,24 @@ import (
 // Password rules and scrypt cost (~32 MiB and tens of milliseconds per hash). The cost is stored with
 // each hash, so it can be raised later.
 const (
-	MinPassword = 12
-	MaxPassword = 1024
+	minPassword = 12
+	maxPassword = 1024
 	ScryptN     = 1 << 15
-	ScryptR     = 8
-	ScryptP     = 1
 )
 
 // scryptN is ScryptN, lowered only by tests (hashing at full cost under the race detector is slow).
 var scryptN = ScryptN
 
-const codeAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789" // no 0/O, 1/I
+// hashSlots caps concurrent password hashes, so a burst of logins can't exhaust memory.
+var hashSlots = make(chan struct{}, 2)
 
-// AuthError is a setup or password problem; the message is safe to show.
-type AuthError struct{ Msg string }
+// authError is a setup or password problem; the message is safe to show.
+type authError string
 
-func (e *AuthError) Error() string { return e.Msg }
+func (e authError) Error() string { return string(e) }
 
-// PasswordHash is the stored form of a password (same JSON as arr-trickle 0.3's Python version).
-type PasswordHash struct {
+// passwordHash is the stored form of a password (the same JSON arr-trickle's Python version wrote).
+type passwordHash struct {
 	Alg  string `json:"alg"`
 	N    int    `json:"n"`
 	R    int    `json:"r"`
@@ -53,25 +55,19 @@ type PasswordHash struct {
 	Hash string `json:"hash"`
 }
 
-func randomBytes(n int) []byte {
-	b := make([]byte, n)
-	_, _ = rand.Read(b) // crypto/rand never fails on supported platforms
-	return b
-}
-
-// HashPassword hashes with scrypt and a random 16-byte salt.
-func HashPassword(password string) PasswordHash {
-	salt := randomBytes(16)
-	dk, err := scrypt.Key([]byte(password), salt, scryptN, ScryptR, ScryptP, 32)
+func hashPassword(password string) passwordHash {
+	salt := make([]byte, 16)
+	rand.Read(salt)
+	dk, err := scrypt.Key([]byte(password), salt, scryptN, 8, 1, 32)
 	if err != nil {
 		panic(err) // only for invalid constant parameters
 	}
 	enc := base64.StdEncoding.EncodeToString
-	return PasswordHash{"scrypt", scryptN, ScryptR, ScryptP, enc(salt), enc(dk)}
+	return passwordHash{"scrypt", scryptN, 8, 1, enc(salt), enc(dk)}
 }
 
-// VerifyPassword compares in constant time.
-func VerifyPassword(password string, h PasswordHash) bool {
+// verifyPassword compares in constant time.
+func verifyPassword(password string, h passwordHash) bool {
 	salt, err1 := base64.StdEncoding.DecodeString(h.Salt)
 	expected, err2 := base64.StdEncoding.DecodeString(h.Hash)
 	if err1 != nil || err2 != nil || len(expected) == 0 || h.N > 1<<20 || h.R > 32 || h.P > 16 {
@@ -81,50 +77,43 @@ func VerifyPassword(password string, h PasswordHash) bool {
 	return err == nil && hmac.Equal(dk, expected)
 }
 
-// CheckNewPassword enforces the password rules.
-func CheckNewPassword(password, confirm string) error {
-	switch {
-	case len([]rune(password)) < MinPassword:
-		return &AuthError{fmt.Sprintf("the password must be at least %d characters", MinPassword)}
-	case len([]rune(password)) > MaxPassword:
-		return &AuthError{fmt.Sprintf("the password must be at most %d characters", MaxPassword)}
+func checkNewPassword(password, confirm string) error {
+	switch n := utf8.RuneCountInString(password); {
+	case n < minPassword:
+		return authError(fmt.Sprintf("the password must be at least %d characters", minPassword))
+	case n > maxPassword:
+		return authError(fmt.Sprintf("the password must be at most %d characters", maxPassword))
 	case !hmac.Equal([]byte(password), []byte(confirm)):
-		return &AuthError{"the passwords do not match"}
+		return authError("the passwords do not match")
 	}
 	return nil
 }
 
-func normalizeCode(code string) string {
-	var b strings.Builder
-	for _, r := range strings.ToUpper(code) {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) {
-			b.WriteRune(r)
-		}
-	}
-	return b.String()
-}
-
-// codeDigest: the code has ~100 bits of entropy, so a plain hash is enough (no need for a slow KDF).
+// codeDigest: the code has 100 random bits, so a plain hash is enough (no need for a slow KDF).
 func codeDigest(code string) string {
-	sum := sha256.Sum256([]byte(normalizeCode(code)))
+	norm := strings.Map(func(r rune) rune {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			return unicode.ToUpper(r)
+		}
+		return -1
+	}, code)
+	sum := sha256.Sum256([]byte(norm))
 	return hex.EncodeToString(sum[:])
 }
 
 // A hash compared against when there is no admin, so a login takes the same time either way.
-var dummy = sync.OnceValue(func() PasswordHash { return HashPassword(hex.EncodeToString(randomBytes(16))) })
+var dummy = sync.OnceValue(func() passwordHash { return hashPassword(rand.Text()) })
 
 type admin struct {
 	Version      int          `json:"version"`
 	Username     string       `json:"username"`
-	Password     PasswordHash `json:"password"`
+	Password     passwordHash `json:"password"`
 	CredentialID string       `json:"credential_id"`
 }
 
 // AuthStore is auth.json (the admin) and setup-code (hash of the one-time code). Both are re-read on
 // every use, so the `reset-password` command takes effect in a running server immediately.
-type AuthStore struct {
-	Path, CodePath string
-}
+type AuthStore struct{ path, codePath string }
 
 // NewAuthStore uses files in stateDir.
 func NewAuthStore(stateDir string) *AuthStore {
@@ -132,12 +121,9 @@ func NewAuthStore(stateDir string) *AuthStore {
 }
 
 func (s *AuthStore) admin() *admin {
-	raw, err := os.ReadFile(s.Path)
-	if err != nil {
-		return nil
-	}
 	var a admin
-	if json.Unmarshal(raw, &a) != nil || a.Username == "" || a.Password.Hash == "" {
+	raw, err := os.ReadFile(s.path)
+	if err != nil || json.Unmarshal(raw, &a) != nil || a.Username == "" || a.Password.Hash == "" {
 		return nil
 	}
 	return &a
@@ -146,76 +132,69 @@ func (s *AuthStore) admin() *admin {
 // HasAdmin reports whether the admin account exists.
 func (s *AuthStore) HasAdmin() bool { return s.admin() != nil }
 
-// CredentialID changes whenever the admin is (re)created; sessions from before a reset stop working.
-func (s *AuthStore) CredentialID() (string, bool) {
-	a := s.admin()
-	if a == nil {
-		return "", false
+// credentialID changes whenever the admin is (re)created; sessions from before a reset stop working.
+func (s *AuthStore) credentialID() (string, bool) {
+	if a := s.admin(); a != nil {
+		return a.CredentialID, true
 	}
-	return a.CredentialID, true
+	return "", false
 }
 
-// NewSetupCode makes a fresh one-time code, stores its hash, and returns it.
+// NewSetupCode makes a fresh one-time code (20 base32 characters in groups of 5), stores its hash,
+// and returns it.
 func (s *AuthStore) NewSetupCode() (string, error) {
-	groups := make([]string, 4)
-	for g := range groups {
-		b := make([]byte, 5)
-		for i := range b {
-			b[i] = codeAlphabet[int(randomBytes(1)[0])%len(codeAlphabet)] // 256 % 32 == 0: no bias
-		}
-		groups[g] = string(b)
-	}
-	code := strings.Join(groups, "-")
-	if err := os.MkdirAll(filepath.Dir(s.CodePath), 0o755); err != nil {
-		return "", err
-	}
-	return code, state.AtomicWrite(s.CodePath, []byte(codeDigest(code)), 0o600)
+	t := rand.Text()
+	code := strings.Join([]string{t[0:5], t[5:10], t[10:15], t[15:20]}, "-")
+	return code, state.AtomicWrite(s.codePath, []byte(codeDigest(code)), 0o600)
 }
 
 // CheckSetupCode compares in constant time.
 func (s *AuthStore) CheckSetupCode(code string) bool {
-	raw, err := os.ReadFile(s.CodePath)
+	raw, err := os.ReadFile(s.codePath)
 	expected := strings.TrimSpace(string(raw))
 	return err == nil && expected != "" && hmac.Equal([]byte(codeDigest(code)), []byte(expected))
 }
 
 // CreateAdmin creates the single admin account with a valid setup code.
 func (s *AuthStore) CreateAdmin(code, username, password, confirm string) error {
-	if s.HasAdmin() {
-		return &AuthError{"an admin already exists"}
-	}
-	if !s.CheckSetupCode(code) {
-		return &AuthError{"the setup code is not valid"}
-	}
 	username = strings.TrimSpace(username)
-	if n := len([]rune(username)); n < 1 || n > 64 {
-		return &AuthError{"the username must be 1-64 characters"}
+	switch n := utf8.RuneCountInString(username); {
+	case s.HasAdmin():
+		return authError("an admin already exists")
+	case !s.CheckSetupCode(code):
+		return authError("the setup code is not valid")
+	case n < 1 || n > 64:
+		return authError("the username must be 1-64 characters")
 	}
-	if err := CheckNewPassword(password, confirm); err != nil {
+	if err := checkNewPassword(password, confirm); err != nil {
 		return err
 	}
-	raw, _ := json.Marshal(admin{1, username, HashPassword(password), hex.EncodeToString(randomBytes(16))})
-	if err := state.AtomicWrite(s.Path, raw, 0o600); err != nil {
+	raw, _ := json.Marshal(admin{1, username, hashPassword(password), rand.Text()})
+	if err := state.AtomicWrite(s.path, raw, 0o600); err != nil {
 		return err
 	}
-	if err := os.Remove(s.CodePath); err != nil && !errors.Is(err, os.ErrNotExist) {
+	return removeIfExists(s.codePath)
+}
+
+func removeIfExists(path string) error {
+	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
 	return nil
 }
 
-// VerifyLogin returns the credential id on success. It always does the full hash, so timing doesn't
+// verifyLogin returns the credential id on success. It always does the full hash, so timing doesn't
 // reveal whether the username exists.
-func (s *AuthStore) VerifyLogin(username, password string) (string, bool) {
+func (s *AuthStore) verifyLogin(username, password string) (string, bool) {
 	a := s.admin()
 	h, name := dummy(), ""
 	if a != nil {
 		h, name = a.Password, a.Username
 	}
-	if r := []rune(password); len(r) > MaxPassword {
-		password = string(r[:MaxPassword])
+	if r := []rune(password); len(r) > maxPassword {
+		password = string(r[:maxPassword])
 	}
-	ok := VerifyPassword(password, h)
+	ok := verifyPassword(password, h)
 	nameOK := hmac.Equal([]byte(strings.TrimSpace(username)), []byte(name))
 	if a != nil && ok && nameOK {
 		return a.CredentialID, true
@@ -225,136 +204,119 @@ func (s *AuthStore) VerifyLogin(username, password string) (string, bool) {
 
 // Reset removes the admin (ending every session) and returns a fresh setup code.
 func (s *AuthStore) Reset() (string, error) {
-	if err := os.Remove(s.Path); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := removeIfExists(s.path); err != nil {
 		return "", err
 	}
 	return s.NewSetupCode()
 }
 
-// Session is server-side; the cookie holds only its random id.
-type Session struct {
-	ID           string
-	CSRF         string
-	Created      time.Time
-	LastSeen     time.Time
-	CredentialID string // "" = not logged in yet (login/setup forms only)
-	Flash        []string
+// session is server-side; the cookie holds only its random id.
+type session struct {
+	id, csrf          string
+	created, lastSeen time.Time
+	credentialID      string // "" = not logged in yet (login/setup forms only)
+	flash             []string
 }
 
-// Authenticated reports whether the session is logged in.
-func (s *Session) Authenticated() bool { return s.CredentialID != "" }
+func (s *session) authenticated() bool { return s.credentialID != "" }
 
-func token() string { return base64.RawURLEncoding.EncodeToString(randomBytes(32)) }
-
-// Sessions holds every session in memory; a restart logs everyone out.
-type Sessions struct {
-	Absolute, Idle time.Duration
-	Clock          func() time.Time
-	AnonLifetime   time.Duration
-	MaxAnon        int
-	mu             sync.Mutex
-	byID           map[string]*Session
+// token32 is 32 random bytes, URL-safe.
+func token32() string {
+	b := make([]byte, 32)
+	rand.Read(b)
+	return base64.RawURLEncoding.EncodeToString(b)
 }
 
-// NewSessions makes a store with the given absolute and idle timeouts.
-func NewSessions(absolute, idle time.Duration) *Sessions {
-	return &Sessions{
-		Absolute: absolute, Idle: min(idle, absolute), Clock: time.Now,
-		AnonLifetime: time.Hour, MaxAnon: 1000, byID: map[string]*Session{},
+// sessions holds every session in memory; a restart logs everyone out.
+type sessions struct {
+	absolute, idle, anonLifetime time.Duration
+	maxAnon                      int
+	clock                        func() time.Time
+	mu                           sync.Mutex
+	byID                         map[string]*session
+}
+
+func newSessions(absolute, idle time.Duration) *sessions {
+	return &sessions{absolute: absolute, idle: min(idle, absolute), anonLifetime: time.Hour, maxAnon: 1000,
+		clock: time.Now, byID: map[string]*session{}}
+}
+
+func (s *sessions) expired(x *session, now time.Time) bool {
+	if x.authenticated() {
+		return now.Sub(x.created) > s.absolute || now.Sub(x.lastSeen) > s.idle
 	}
+	return now.Sub(x.created) > s.anonLifetime
 }
 
-func (s *Sessions) expired(x *Session, now time.Time) bool {
-	if x.Authenticated() {
-		return now.Sub(x.Created) > s.Absolute || now.Sub(x.LastSeen) > s.Idle
-	}
-	return now.Sub(x.Created) > s.AnonLifetime
-}
-
-// Create starts a session; credentialID "" makes a not-logged-in one.
-func (s *Sessions) Create(credentialID string) *Session {
+// create starts a session; credentialID "" makes a not-logged-in one.
+func (s *sessions) create(credentialID string) *session {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.prune()
-	now := s.Clock()
-	x := &Session{ID: token(), CSRF: token(), Created: now, LastSeen: now, CredentialID: credentialID}
-	s.byID[x.ID] = x
+	now := s.clock()
+	maps.DeleteFunc(s.byID, func(_ string, x *session) bool { return s.expired(x, now) })
+	var anon []*session
+	for _, x := range s.byID {
+		if !x.authenticated() {
+			anon = append(anon, x)
+		}
+	}
+	if extra := len(anon) - s.maxAnon + 1; extra > 0 { // bound memory: drop the oldest not-logged-in sessions
+		slices.SortFunc(anon, func(a, b *session) int { return a.created.Compare(b.created) })
+		for _, x := range anon[:extra] {
+			delete(s.byID, x.id)
+		}
+	}
+	x := &session{id: token32(), csrf: token32(), created: now, lastSeen: now, credentialID: credentialID}
+	s.byID[x.id] = x
 	return x
 }
 
-// Get returns a live session and refreshes its idle timer.
-func (s *Sessions) Get(id string) *Session {
-	if id == "" {
-		return nil
-	}
+// get returns a live session and refreshes its idle timer.
+func (s *sessions) get(id string) *session {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	x := s.byID[id]
 	if x == nil {
 		return nil
 	}
-	now := s.Clock()
-	if s.expired(x, now) {
-		delete(s.byID, id)
-		return nil
+	if now := s.clock(); !s.expired(x, now) {
+		x.lastSeen = now
+		return x
 	}
-	x.LastSeen = now
-	return x
+	delete(s.byID, id)
+	return nil
 }
 
-// Delete ends a session.
-func (s *Sessions) Delete(id string) {
+func (s *sessions) delete(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.byID, id)
 }
 
-// AddFlash queues a message for the session's next page.
-func (s *Sessions) AddFlash(x *Session, msg string) {
+func (s *sessions) addFlash(x *session, msg string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	x.Flash = append(x.Flash, msg)
+	x.flash = append(x.flash, msg)
 }
 
-// TakeFlash returns and clears the queued messages.
-func (s *Sessions) TakeFlash(x *Session) []string {
+func (s *sessions) takeFlash(x *session) []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := x.Flash
-	x.Flash = nil
+	out := x.flash
+	x.flash = nil
 	return out
 }
 
-func (s *Sessions) prune() {
-	now := s.Clock()
-	var anon []*Session
-	for id, x := range s.byID {
-		switch {
-		case s.expired(x, now):
-			delete(s.byID, id)
-		case !x.Authenticated():
-			anon = append(anon, x)
-		}
-	}
-	if extra := len(anon) - s.MaxAnon + 1; extra > 0 { // bound memory: drop the oldest not-logged-in sessions
-		sort.Slice(anon, func(i, j int) bool { return anon[i].Created.Before(anon[j].Created) })
-		for _, x := range anon[:extra] {
-			delete(s.byID, x.ID)
-		}
-	}
-}
-
-// RateLimiter throttles failed logins: exponential backoff per client IP after a few free attempts,
-// plus a global ceiling so an attacker rotating addresses is slowed too.
-type RateLimiter struct {
-	Free         int
-	MaxBackoff   time.Duration
-	GlobalLimit  int
-	GlobalWindow time.Duration
-	Clock        func() time.Time
-	mu           sync.Mutex
-	ips          map[string]failures
-	recent       []time.Time
+// rateLimiter throttles failed logins: exponential backoff per client after a few free attempts,
+// plus a global ceiling so an attacker rotating addresses is slowed too. IPv6 clients are counted
+// per /64, since one host can use a whole /64.
+type rateLimiter struct {
+	free, globalLimit        int
+	maxBackoff, globalWindow time.Duration
+	clock                    func() time.Time
+	mu                       sync.Mutex
+	clients                  map[string]failures
+	recent                   []time.Time
 }
 
 type failures struct {
@@ -362,70 +324,55 @@ type failures struct {
 	last time.Time
 }
 
-// NewRateLimiter has the production defaults: 5 free attempts, backoff up to 15 minutes, 30 failures per 10 minutes.
-func NewRateLimiter() *RateLimiter {
-	return &RateLimiter{Free: 5, MaxBackoff: 15 * time.Minute, GlobalLimit: 30, GlobalWindow: 10 * time.Minute, Clock: time.Now, ips: map[string]failures{}}
+// newRateLimiter has the production defaults: 5 free attempts, backoff up to 15 minutes, 30 failures per 10 minutes.
+func newRateLimiter() *rateLimiter {
+	return &rateLimiter{free: 5, globalLimit: 30, maxBackoff: 15 * time.Minute, globalWindow: 10 * time.Minute,
+		clock: time.Now, clients: map[string]failures{}}
 }
 
-// RetryAfter is how long this client must wait (0 = allowed now).
-func (l *RateLimiter) RetryAfter(ip string) time.Duration {
+func clientKey(ip string) string {
+	if a, err := netip.ParseAddr(ip); err == nil && a.Is6() {
+		return netip.PrefixFrom(a, 64).Masked().String()
+	}
+	return ip
+}
+
+// retryAfter is how long this client must wait (0 = allowed now).
+func (l *rateLimiter) retryAfter(ip string) time.Duration {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	now := l.Clock()
-	for len(l.recent) > 0 && now.Sub(l.recent[0]) > l.GlobalWindow {
-		l.recent = l.recent[1:]
-	}
+	now := l.clock()
+	l.recent = slices.DeleteFunc(l.recent, func(t time.Time) bool { return now.Sub(t) > l.globalWindow })
 	var wait time.Duration
-	if len(l.recent) >= l.GlobalLimit {
-		wait = l.recent[0].Add(l.GlobalWindow).Sub(now)
+	if len(l.recent) >= l.globalLimit {
+		wait = l.recent[0].Add(l.globalWindow).Sub(now)
 	}
-	if f := l.ips[ip]; f.n >= l.Free {
-		backoff := time.Duration(math.Min(float64(l.MaxBackoff), float64(time.Second)*math.Pow(2, float64(f.n-l.Free))))
-		wait = max(wait, f.last.Add(backoff).Sub(now))
+	if f := l.clients[clientKey(ip)]; f.n >= l.free {
+		wait = max(wait, f.last.Add(min(l.maxBackoff, time.Second<<min(f.n-l.free, 30))).Sub(now))
 	}
 	return max(wait, 0)
 }
 
-// Failure records a failed attempt.
-func (l *RateLimiter) Failure(ip string) {
+func (l *rateLimiter) failure(ip string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	now := l.Clock()
-	f := l.ips[ip]
-	if f.n > 0 && now.Sub(f.last) > 2*l.MaxBackoff {
+	now, key := l.clock(), clientKey(ip)
+	f := l.clients[key]
+	if f.n > 0 && now.Sub(f.last) > 2*l.maxBackoff {
 		f.n = 0 // quiet for a while: start over
 	}
-	l.ips[ip] = failures{f.n + 1, now}
+	l.clients[key] = failures{f.n + 1, now}
 	l.recent = append(l.recent, now)
-	if len(l.recent) > 10*l.GlobalLimit+1000 { // bound memory
-		l.recent = l.recent[len(l.recent)-l.GlobalLimit:]
-	}
-	if len(l.ips) > 10_000 { // bound memory; drop the stalest entries
-		type kv struct {
-			ip string
-			t  time.Time
-		}
-		all := make([]kv, 0, len(l.ips))
-		for k, v := range l.ips {
-			all = append(all, kv{k, v.last})
-		}
-		sort.Slice(all, func(i, j int) bool { return all[i].t.Before(all[j].t) })
-		for _, e := range all[:1000] {
-			delete(l.ips, e.ip)
+	if len(l.clients) > 10_000 { // bound memory: drop the stalest entries
+		keys := slices.SortedFunc(maps.Keys(l.clients), func(a, b string) int { return l.clients[a].last.Compare(l.clients[b].last) })
+		for _, k := range keys[:1000] {
+			delete(l.clients, k)
 		}
 	}
 }
 
-// Success forgets an IP's failures.
-func (l *RateLimiter) Success(ip string) {
+func (l *rateLimiter) success(ip string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	delete(l.ips, ip)
-}
-
-// Tracked is how many IPs have recorded failures (for tests).
-func (l *RateLimiter) Tracked() int {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return len(l.ips)
+	delete(l.clients, clientKey(ip))
 }

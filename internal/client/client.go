@@ -7,9 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -46,8 +48,7 @@ type Client struct {
 // New checks the URL scheme and builds a client. Redirects are never followed: that would resend
 // X-Api-Key to wherever the app (or a proxy) points.
 func New(kind, rawURL, apiKey string, timeout time.Duration) (*Client, error) {
-	u, err := url.Parse(rawURL)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+	if u, err := url.Parse(rawURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") {
 		return nil, errorf("unsupported URL scheme in '%s'", rawURL)
 	}
 	spec := apps.Specs[kind]
@@ -71,91 +72,75 @@ func (c *Client) GoString() string { return c.String() }
 // errorDetail is the app's own validation messages for a 4xx, e.g. ": Path: Folder does not exist".
 // Only the errorMessage/message fields are used, never raw bodies, and the result is truncated;
 // the *arr apps don't echo request headers, so the key cannot appear here.
-func errorDetail(code int, body io.Reader) string {
-	if code < 400 || code >= 500 {
-		return ""
-	}
-	raw, _ := io.ReadAll(io.LimitReader(body, 64*1024))
+func errorDetail(body io.Reader) string {
 	var v any
-	if json.Unmarshal(raw, &v) != nil {
+	if json.NewDecoder(io.LimitReader(body, 64*1024)).Decode(&v) != nil {
 		return ""
 	}
-	trunc := func(msgs []string) string {
-		s := strings.Join(msgs, "; ")
-		if r := []rune(s); len(r) > 300 {
-			s = string(r[:300])
-		}
-		return ": " + s
-	}
+	var msgs []string
 	if m, ok := v.(map[string]any); ok {
 		if errs, ok := m["errors"].(map[string]any); ok { // ASP.NET problem details
-			var msgs []string
-			for field, list := range errs {
-				if l, ok := list.([]any); ok && len(l) > 0 {
+			for _, field := range slices.Sorted(maps.Keys(errs)) {
+				if l, ok := errs[field].([]any); ok && len(l) > 0 {
 					msgs = append(msgs, fmt.Sprintf("%s: %v", field, l[0]))
 				}
 			}
 			if len(msgs) == 0 {
 				msgs = []string{fmt.Sprint(m["title"])}
 			}
-			return trunc(msgs)
 		}
 	}
-	items, ok := v.([]any)
-	if !ok {
-		items = []any{v}
-	}
-	var msgs, plain []string
-	for _, it := range items {
-		m, ok := it.(map[string]any)
+	if msgs == nil {
+		items, ok := v.([]any)
 		if !ok {
-			continue
+			items = []any{v}
 		}
-		if em, ok := m["errorMessage"].(string); ok && em != "" {
-			if pn, ok := m["propertyName"].(string); ok && pn != "" {
-				msgs = append(msgs, pn+": "+em)
-			} else {
+		var plain []string
+		for _, it := range items {
+			m, _ := it.(map[string]any)
+			if em, _ := m["errorMessage"].(string); em != "" {
+				if pn, _ := m["propertyName"].(string); pn != "" {
+					em = pn + ": " + em
+				}
 				msgs = append(msgs, em)
 			}
+			if msg, ok := m["message"]; ok && msg != nil && msg != "" {
+				plain = append(plain, fmt.Sprint(msg))
+			}
 		}
-		if msg, ok := m["message"]; ok && msg != nil && msg != "" {
-			plain = append(plain, fmt.Sprint(msg))
+		if msgs == nil {
+			msgs = plain
 		}
 	}
-	if len(msgs) == 0 {
-		msgs = plain
-	}
-	if len(msgs) == 0 {
+	if msgs == nil {
 		return ""
 	}
-	return trunc(msgs)
+	s := []rune(strings.Join(msgs, "; "))
+	return ": " + string(s[:min(len(s), 300)])
 }
 
 func reason(err error) string {
-	var ne net.Error
-	if errors.As(err, &ne) && ne.Timeout() {
+	if ne, ok := errors.AsType[net.Error](err); ok && ne.Timeout() {
 		return "timed out"
 	}
-	var ue *url.Error
-	if errors.As(err, &ue) {
-		err = ue.Err
-	}
-	var oe *net.OpError
-	if errors.As(err, &oe) {
+	if oe, ok := errors.AsType[*net.OpError](err); ok {
 		return oe.Err.Error()
+	}
+	if ue, ok := errors.AsType[*url.Error](err); ok {
+		return ue.Err.Error()
 	}
 	return err.Error()
 }
 
-// Request sends one API call and decodes the JSON answer.
-func (c *Client) Request(method, path string, data any) (any, error) {
+// raw sends one API call and returns the (size-capped) body.
+func (c *Client) raw(method, path string, data any) ([]byte, error) {
 	var body io.Reader
 	if data != nil {
-		raw, err := json.Marshal(data)
+		b, err := json.Marshal(data)
 		if err != nil {
 			return nil, errorf("%s %s: %v", method, path, err)
 		}
-		body = bytes.NewReader(raw)
+		body = bytes.NewReader(b)
 	}
 	req, err := http.NewRequest(method, c.Base+path, body)
 	if err != nil {
@@ -170,100 +155,83 @@ func (c *Client) Request(method, path string, data any) (any, error) {
 		return nil, errorf("%s %s: %s", method, path, reason(err))
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		hint := errorDetail(resp.StatusCode, resp.Body)
-		if resp.StatusCode == 401 {
-			hint = " (check the API key)"
-		}
-		return nil, errorf("%s %s: HTTP %d%s", method, path, resp.StatusCode, hint)
+	switch {
+	case resp.StatusCode == http.StatusUnauthorized:
+		return nil, errorf("%s %s: HTTP 401 (check the API key)", method, path)
+	case resp.StatusCode >= 400 && resp.StatusCode < 500:
+		return nil, errorf("%s %s: HTTP %d%s", method, path, resp.StatusCode, errorDetail(resp.Body))
+	case resp.StatusCode >= 300:
+		return nil, errorf("%s %s: HTTP %d", method, path, resp.StatusCode)
 	}
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, MaxResponseBytes+1))
+	b, err := io.ReadAll(io.LimitReader(resp.Body, MaxResponseBytes+1))
 	if err != nil {
 		return nil, errorf("%s %s: %s", method, path, reason(err))
 	}
-	if int64(len(raw)) > MaxResponseBytes {
+	if int64(len(b)) > MaxResponseBytes {
 		return nil, errorf("%s %s: response larger than %d bytes", method, path, MaxResponseBytes)
 	}
-	if len(raw) == 0 {
-		return nil, nil
-	}
-	var v any
-	if json.Unmarshal(raw, &v) != nil {
+	if len(b) > 0 && !json.Valid(b) {
 		return nil, errorf("%s %s: response is not JSON (wrong URL or base path?)", method, path)
 	}
-	return v, nil
+	return b, nil
 }
 
-func (c *Client) get(path string) (any, error) { return c.Request(http.MethodGet, path, nil) }
+// Request sends one API call and decodes the JSON answer (nil for an empty body).
+func (c *Client) Request(method, path string, data any) (any, error) {
+	b, err := c.raw(method, path, data)
+	if err != nil || len(b) == 0 {
+		return nil, err
+	}
+	var v any
+	return v, json.Unmarshal(b, &v)
+}
 
-func shape(path string) error { return errorf("GET %s: unexpected response shape", path) }
+// call decodes the answer into T; a valid JSON answer of another shape is an error too.
+func call[T any](c *Client, method, path string, data any) (T, error) {
+	var v T
+	b, err := c.raw(method, path, data)
+	if err == nil && json.Unmarshal(b, &v) != nil {
+		route, _, _ := strings.Cut(path, "?")
+		err = errorf("%s %s: unexpected response shape", method, route)
+	}
+	return v, err
+}
 
 // Status is /system/status.
 func (c *Client) Status() (map[string]any, error) {
-	v, err := c.get("/system/status")
-	if err != nil {
-		return nil, err
-	}
-	m, ok := v.(map[string]any)
-	if !ok {
-		return nil, shape("/system/status")
-	}
-	return m, nil
+	return call[map[string]any](c, http.MethodGet, "/system/status", nil)
 }
 
 // Health is /health.
 func (c *Client) Health() ([]map[string]any, error) {
-	v, err := c.get("/health")
-	if err != nil {
-		return nil, err
-	}
-	list, ok := v.([]any)
-	if !ok {
-		return nil, shape("/health")
-	}
-	out := make([]map[string]any, 0, len(list))
-	for _, it := range list {
-		if m, ok := it.(map[string]any); ok {
-			out = append(out, m)
-		}
-	}
-	return out, nil
+	return call[[]map[string]any](c, http.MethodGet, "/health", nil)
 }
 
 // QueueSize is the number of items in the download queue.
 func (c *Client) QueueSize() (int, error) {
-	v, err := c.get("/queue?page=1&pageSize=1")
+	q, err := call[struct{ TotalRecords *int }](c, http.MethodGet, "/queue?page=1&pageSize=1", nil)
+	if err == nil && q.TotalRecords == nil {
+		err = errorf("GET /queue: unexpected response shape")
+	}
 	if err != nil {
 		return 0, err
 	}
-	m, _ := v.(map[string]any)
-	n, ok := apps.Int(m, "totalRecords")
-	if !ok {
-		return 0, shape("/queue")
-	}
-	return n, nil
+	return *q.TotalRecords, nil
 }
 
 // UpgradeProfiles is the ids of quality profiles that allow upgrades; cutoff searches elsewhere are wasted.
 func (c *Client) UpgradeProfiles() (map[int]bool, error) {
-	v, err := c.get("/qualityprofile")
-	if err != nil {
-		return nil, err
-	}
-	list, ok := v.([]any)
-	if !ok {
-		return nil, shape("/qualityprofile")
-	}
+	profiles, err := call[[]struct {
+		ID             int
+		UpgradeAllowed bool
+	}](c, http.MethodGet, "/qualityprofile", nil)
 	out := map[int]bool{}
-	for _, it := range list {
-		m, _ := it.(map[string]any)
-		if up, _ := m["upgradeAllowed"].(bool); up {
-			if id, ok := apps.Int(m, "id"); ok {
-				out[id] = true
-			}
+	for _, p := range profiles {
+		if p.UpgradeAllowed {
+			out[p.ID] = true
 		}
 	}
-	return out, nil
+	return out, err
 }
 
 // Wanted is one page of /wanted/{missing,cutoff}, least recently searched first.
@@ -275,37 +243,25 @@ func (c *Client) Wanted(kind string, pageSize int) (WantedPage, error) {
 	if c.Spec.Include != "" {
 		q.Set(c.Spec.Include, "true")
 	}
-	path := "/wanted/" + kind + "?" + q.Encode()
-	v, err := c.get(path)
+	page, err := call[struct {
+		Records      []apps.Record
+		SortKey      string
+		TotalRecords *int
+	}](c, http.MethodGet, "/wanted/"+kind+"?"+q.Encode(), nil)
+	if err == nil && page.Records == nil {
+		err = errorf("GET /wanted/%s: unexpected response shape", kind)
+	}
 	if err != nil {
 		return WantedPage{}, err
 	}
-	m, ok := v.(map[string]any)
-	list, ok2 := m["records"].([]any)
-	if !ok || !ok2 {
-		return WantedPage{}, shape("/wanted/" + kind)
+	total := len(page.Records)
+	if page.TotalRecords != nil {
+		total = *page.TotalRecords
 	}
-	page := WantedPage{Records: make([]apps.Record, 0, len(list))}
-	for _, it := range list {
-		if r, ok := it.(map[string]any); ok {
-			page.Records = append(page.Records, r)
-		}
-	}
-	page.SortKey, _ = m["sortKey"].(string)
-	total, ok := apps.Int(m, "totalRecords")
-	if !ok {
-		total = len(page.Records)
-	}
-	page.Total = total
-	return page, nil
+	return WantedPage{page.Records, page.SortKey, total}, nil
 }
 
 // Command sends a /command (e.g. a search).
 func (c *Client) Command(body map[string]any) (map[string]any, error) {
-	v, err := c.Request(http.MethodPost, "/command", body)
-	if err != nil {
-		return nil, err
-	}
-	m, _ := v.(map[string]any)
-	return m, nil
+	return call[map[string]any](c, http.MethodPost, "/command", body)
 }

@@ -2,6 +2,8 @@ package web
 
 import (
 	"fmt"
+	"maps"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -11,7 +13,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cstupi/arr-trickle/internal/apps"
 	"github.com/cstupi/arr-trickle/internal/config"
 	"github.com/cstupi/arr-trickle/internal/runner"
 	"github.com/cstupi/arr-trickle/internal/service"
@@ -48,49 +49,42 @@ func lanFactory(i config.Instance) (runner.Prober, error) {
 	}
 	f := tu.For(i.Kind)
 	for n := 1; n <= 3; n++ {
-		switch i.Kind {
-		case "lidarr":
-			f.Missing = append(f.Missing, tu.A(n))
-		case "radarr":
-			f.Missing = append(f.Missing, tu.M(n))
-		default:
-			f.Missing = append(f.Missing, tu.E(n, 1))
-		}
+		f.Missing = append(f.Missing, map[string]func(int) map[string]any{"lidarr": tu.A, "radarr": tu.M, "sonarr": func(n int) map[string]any { return tu.E(n, 1) }}[i.Kind](n))
 	}
 	f.Queue = 1
 	return f, nil
 }
 
 type env struct {
-	t      testing.TB
-	srv    *Server
-	sched  *service.Scheduler
-	config string
-	state  string
+	t             testing.TB
+	srv           *Server
+	sched         *service.Scheduler
+	config, state string
 }
 
 type opts struct {
 	toml    string
 	factory service.ClientFactory
-	noFile  bool
+	noFile  bool // configure from the environment, as without a config.toml
+	admin   bool // create the admin account
 }
 
 func newEnv(t testing.TB, o opts) *env {
 	t.Helper()
 	dir := t.TempDir()
-	stateDir := filepath.Join(dir, "state")
-	cfgDir := filepath.Join(dir, "config")
-	os.MkdirAll(stateDir, 0o755)
-	os.MkdirAll(cfgDir, 0o755)
-	cfg := filepath.Join(cfgDir, "config.toml")
-	var s config.Settings
-	var err error
-	if o.noFile {
-		s, err = config.Load(cfg, config.Environ{"STATE_DIR": stateDir}, true)
-	} else {
-		os.WriteFile(cfg, []byte(fmt.Sprintf("state_dir = %q\n%s", stateDir, o.toml)), 0o644)
-		s, err = config.Load(cfg, config.Environ{}, true)
+	stateDir, cfg := filepath.Join(dir, "state"), filepath.Join(dir, "config", "config.toml")
+	for _, d := range []string{stateDir, filepath.Dir(cfg)} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
 	}
+	envVars := config.Environ{}
+	if o.noFile {
+		envVars["STATE_DIR"] = stateDir
+	} else if err := os.WriteFile(cfg, fmt.Appendf(nil, "state_dir = %q\n%s", stateDir, o.toml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s, err := config.Load(cfg, envVars, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,13 +92,18 @@ func newEnv(t testing.TB, o opts) *env {
 		o.factory = lanFactory
 	}
 	sched := service.New(s, o.factory, nil)
-	return &env{t, New(s, sched, cfg), sched, cfg, stateDir}
+	e := &env{t, New(s, sched, cfg), sched, cfg, stateDir}
+	if o.admin {
+		e.makeAdmin()
+	}
+	return e
 }
 
 func (e *env) makeAdmin() {
-	if !e.srv.Store.HasAdmin() {
-		code, _ := e.srv.Store.NewSetupCode()
-		if err := e.srv.Store.CreateAdmin(code, "admin", password, password); err != nil {
+	e.t.Helper()
+	if !e.srv.store.HasAdmin() {
+		code, _ := e.srv.store.NewSetupCode()
+		if err := e.srv.store.CreateAdmin(code, "admin", password, password); err != nil {
 			e.t.Fatal(err)
 		}
 	}
@@ -130,30 +129,17 @@ type resp struct {
 
 func (r resp) text() string { return r.Body.String() }
 
-func (b *browser) do(method, path string, body string, headers map[string]string) resp {
-	var req *http.Request
-	if body != "" || method == "POST" {
-		req = httptest.NewRequest(method, b.scheme+"://testserver"+path, strings.NewReader(body))
+func (b *browser) do(method, path, body string, headers map[string]string) resp {
+	req := httptest.NewRequest(method, b.scheme+"://testserver"+path, strings.NewReader(body))
+	if method == http.MethodPost {
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	} else {
-		req = httptest.NewRequest(method, b.scheme+"://testserver"+path, nil)
 	}
-	if b.scheme != "https" {
-		req.TLS = nil
-	}
-	req.RemoteAddr = b.ip + ":50000"
-	if strings.Contains(b.ip, ":") {
-		req.RemoteAddr = "[" + b.ip + "]:50000"
-	}
+	req.RemoteAddr = net.JoinHostPort(b.ip, "50000")
 	for name, value := range b.cookies {
 		req.AddCookie(&http.Cookie{Name: name, Value: value})
 	}
 	for k, v := range headers {
-		if v == "" {
-			req.Header.Del(k)
-		} else {
-			req.Header.Set(k, v)
-		}
+		req.Header.Set(k, v)
 	}
 	rec := httptest.NewRecorder()
 	b.e.srv.ServeHTTP(rec, req)
@@ -167,41 +153,37 @@ func (b *browser) do(method, path string, body string, headers map[string]string
 	return resp{rec, method, path}
 }
 
-func (b *browser) get(path string) resp { return b.do("GET", path, "", nil) }
+func (b *browser) get(path string) resp { return b.do(http.MethodGet, path, "", nil) }
 
-func form(kv ...string) url.Values {
+// with returns a copy of base with the key/value pairs set.
+func with(base url.Values, kv ...string) url.Values {
 	v := url.Values{}
+	maps.Copy(v, base)
 	for i := 0; i+1 < len(kv); i += 2 {
 		v.Set(kv[i], kv[i+1])
 	}
 	return v
 }
 
+func form(kv ...string) url.Values { return with(nil, kv...) }
+
 // post sends a same-origin form with the session's CSRF token (unless the form sets its own).
 func (b *browser) post(path string, f url.Values, headers ...map[string]string) resp {
-	if f == nil {
-		f = url.Values{}
-	}
 	if !f.Has("csrf") {
-		f.Set("csrf", b.csrf)
+		f = with(f, "csrf", b.csrf)
 	}
-	h := map[string]string{"Origin": origin}
-	if b.scheme == "https" {
-		h["Origin"] = "https://testserver"
-	}
+	h := map[string]string{"Origin": b.scheme + "://testserver"}
 	for _, extra := range headers {
-		for k, v := range extra {
-			h[k] = v
-		}
+		maps.Copy(h, extra)
 	}
-	return b.do("POST", path, f.Encode(), h)
+	return b.do(http.MethodPost, path, f.Encode(), h)
 }
 
 func (b *browser) login() *browser {
+	b.e.t.Helper()
 	b.e.makeAdmin()
-	page := b.get("/login")
-	r := b.post("/login", form("csrf", csrfOf(b.e.t, page.text()), "username", "admin", "password", password))
-	if r.Code != 303 {
+	r := b.post("/login", form("csrf", csrfOf(b.e.t, b.get("/login").text()), "username", "admin", "password", password))
+	if r.Code != http.StatusSeeOther {
 		b.e.t.Fatalf("login failed: %d %s", r.Code, r.text())
 	}
 	b.csrf = csrfOf(b.e.t, b.get("/").text())
@@ -222,13 +204,19 @@ func want(t testing.TB, cond bool, format string, args ...any) {
 	}
 }
 
-func search(title string) runner.Search {
-	return runner.Search{Wanted: "missing", Command: "MoviesSearch", Items: []string{title}, Cost: 1}
+func secureCookie(r resp) bool {
+	return strings.Contains(strings.ToLower(r.Header().Get("Set-Cookie")), "secure")
 }
 
-var _ = apps.Kinds
-
-func readFile(path string) (string, error) {
+func fileText(t testing.TB, path string) string {
+	t.Helper()
 	raw, err := os.ReadFile(path)
-	return string(raw), err
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}
+
+func search(title string) runner.Search {
+	return runner.Search{Wanted: "missing", Command: "MoviesSearch", Items: []string{title}, Cost: 1}
 }

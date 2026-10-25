@@ -10,9 +10,9 @@ import (
 )
 
 func TestStoreWrites0600FileIn0700Dir(t *testing.T) {
-	dir := t.TempDir()
-	path, err := Store(dir, "sonarr-4k", tu.Key)
-	if err != nil || path != filepath.Join(dir, "secrets", "sonarr-4k.key") {
+	d := t.TempDir()
+	path, err := Store(d, "sonarr-4k", tu.Key)
+	if err != nil || path != filepath.Join(d, "secrets", "sonarr-4k.key") {
 		t.Fatal(path, err)
 	}
 	raw, _ := os.ReadFile(path)
@@ -22,13 +22,13 @@ func TestStoreWrites0600FileIn0700Dir(t *testing.T) {
 	if info, _ := os.Stat(path); info.Mode().Perm() != 0o600 {
 		t.Fatal(info.Mode())
 	}
-	if info, _ := os.Stat(Dir(dir)); info.Mode().Perm() != 0o700 {
+	if info, _ := os.Stat(dir(d)); info.Mode().Perm() != 0o700 {
 		t.Fatal(info.Mode())
 	}
-	if !IsManaged(dir, path) {
+	if !IsManaged(d, path) {
 		t.Fatal("managed")
 	}
-	Remove(dir, path)
+	Remove(d, path)
 	if _, err := os.Stat(path); err == nil {
 		t.Fatal("not removed")
 	}
@@ -50,20 +50,20 @@ func TestBadKeyFormatRejectedWithoutEcho(t *testing.T) {
 }
 
 func TestOnlyManagedFilesAreRemoved(t *testing.T) {
-	dir := t.TempDir()
-	other := filepath.Join(dir, "other.key")
+	d := t.TempDir()
+	other := filepath.Join(d, "other.key")
 	os.WriteFile(other, []byte(tu.Key), 0o600)
-	Remove(dir, other)
-	Remove(dir, "")
-	if _, err := os.Stat(other); err != nil || IsManaged(dir, "") || IsManaged(dir, filepath.Join(Dir(dir), "x.txt")) {
+	Remove(d, other)
+	Remove(d, "")
+	if _, err := os.Stat(other); err != nil || IsManaged(d, "") || IsManaged(d, filepath.Join(dir(d), "x.txt")) {
 		t.Fatal("removed an unmanaged file")
 	}
 }
 
 func TestUnwritableStateDir(t *testing.T) {
-	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "secrets"), nil, 0o600) // a file where the directory should be
-	if _, err := Store(dir, "sonarr", tu.Key); err == nil {
+	d := t.TempDir()
+	os.WriteFile(filepath.Join(d, "secrets"), nil, 0o600) // a file where the directory should be
+	if _, err := Store(d, "sonarr", tu.Key); err == nil {
 		t.Fatal("expected an error")
 	}
 }

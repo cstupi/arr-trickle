@@ -56,7 +56,7 @@ done
 
 # shellcheck disable=SC2086  # ENV_ARGS is a deliberate word-split list of -e flags
 docker run --rm --network "$NET" --user "$(id -u):$(id -g)" -e HOME=/tmp -e GOPATH=/tmp/go -e GOCACHE=/tmp/go-cache \
-    -e ARR_IT_SHELL="${ARR_IT_SHELL:-}" $ENV_ARGS -v "$PWD":/src -v "$WORK":"$WORK" -w /src golang:1.26 sh -euc '
+    -e ARR_IT_SHELL="${ARR_IT_SHELL:-}" $ENV_ARGS -v "$PWD":/src -v "$WORK":"$WORK" -w /src golang:1.26.10 sh -euc '
 if [ -n "${ARR_IT_SHELL:-}" ]; then sh -c "$ARR_IT_SHELL"; else
 go test -count=1 -tags integration -v -timeout 15m ./integration/ "$@"; fi
 ' sh "$@"

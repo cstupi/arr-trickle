@@ -3,11 +3,12 @@ package testutil
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -109,13 +110,19 @@ func (f *Fake) Command(body map[string]any) (map[string]any, error) {
 func (f *Fake) Sent() []map[string]any {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return append([]map[string]any(nil), f.Commands...)
+	return slices.Clone(f.Commands)
 }
 
-// Logs captures slog output for the rest of the test.
+// Logs is a concurrency-safe log buffer.
 type Logs struct {
 	mu  sync.Mutex
 	buf bytes.Buffer
+}
+
+func (l *Logs) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.Write(p)
 }
 
 func (l *Logs) String() string {
@@ -124,32 +131,32 @@ func (l *Logs) String() string {
 	return l.buf.String()
 }
 
-type logHandler struct{ l *Logs }
-
-func (h logHandler) Enabled(context.Context, slog.Level) bool { return true }
-func (h logHandler) WithAttrs([]slog.Attr) slog.Handler       { return h }
-func (h logHandler) WithGroup(string) slog.Handler            { return h }
-func (h logHandler) Handle(_ context.Context, r slog.Record) error {
-	h.l.mu.Lock()
-	defer h.l.mu.Unlock()
-	fmt.Fprintf(&h.l.buf, "%s %s\n", r.Level, r.Message)
-	return nil
-}
-
-// CaptureLogs routes slog to a buffer until the test ends.
+// CaptureLogs routes slog (all levels) to a buffer until the test ends.
 func CaptureLogs(t testing.TB) *Logs {
 	l := &Logs{}
 	old := slog.Default()
-	slog.SetDefault(slog.New(logHandler{l}))
+	slog.SetDefault(slog.New(slog.NewTextHandler(l, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	t.Cleanup(func() { slog.SetDefault(old) })
 	return l
 }
 
 // ArrConfigXML writes an *arr config.xml holding Key and returns its path.
 func ArrConfigXML(t testing.TB) string {
+	t.Helper()
 	path := filepath.Join(t.TempDir(), "config.xml")
 	if err := os.WriteFile(path, []byte("<Config>\n  <Port>8989</Port>\n  <ApiKey>"+Key+"</ApiKey>\n</Config>\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return path
+}
+
+// FreePort is a local TCP port that nothing listens on (right now).
+func FreePort(t testing.TB) int {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	return l.Addr().(*net.TCPAddr).Port
 }

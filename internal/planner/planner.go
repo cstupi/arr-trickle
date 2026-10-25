@@ -2,6 +2,7 @@
 package planner
 
 import (
+	"slices"
 	"time"
 
 	"github.com/cstupi/arr-trickle/internal/apps"
@@ -12,7 +13,7 @@ type Command = map[string]any
 
 // Options narrow what Select may pick.
 type Options struct {
-	Exclude         map[int]bool
+	Exclude         []int
 	UpgradeProfiles map[int]bool // nil: no profile filter
 	PerSeason       bool
 }
@@ -36,7 +37,7 @@ func Select(kind string, records []apps.Record, count int, now time.Time, o Opti
 		if !apps.IsReleased(kind, r, now) {
 			continue
 		}
-		if id, ok := apps.OwnerID(kind, r); ok && o.Exclude[id] {
+		if id, ok := apps.OwnerID(kind, r); ok && slices.Contains(o.Exclude, id) {
 			continue
 		}
 		if o.UpgradeProfiles != nil {

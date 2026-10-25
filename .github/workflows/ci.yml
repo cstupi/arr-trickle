@@ -26,7 +26,8 @@ jobs:
           persist-credentials: false
       - run: docker run --rm -v "$PWD":/repo zricethezav/gitleaks:v8.21.2 git /repo --no-banner --redact -v
 
-  lint:
+  check:
+    # gofmt, modernizers, vet, staticcheck, govulncheck, tests with -race and coverage >= 90%.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -34,30 +35,11 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
-      - name: gofmt
-        run: test -z "$(gofmt -l . | tee /dev/stderr)"
-      - run: go mod verify
-      - run: go vet ./... && go vet -tags integration ./integration/
-      - run: go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 ./...
-      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
-
-  unit:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-      - name: Tests (race detector) with coverage of at least 90%
-        run: |
-          pkgs="$(go list ./internal/... | grep -v /testutil | paste -sd, -)"
-          go test -race -count=1 -coverpkg="$pkgs" -coverprofile=cover.out ./...
-          total="$(go tool cover -func=cover.out | awk '/^total:/ {sub("%", "", $3); print $3}')"
-          echo "total coverage: ${total}%"
-          awk -v t="$total" 'BEGIN { exit (t >= 90) ? 0 : 1 }'
+          go-version-file: go.mod  # honours the toolchain line
+          cache-dependency-path: |
+            go.sum
+            tools/go.sum
+      - run: scripts/test.sh
 
   integration:
     # Real Sonarr/Radarr/Lidarr in throwaway containers: catches upstream API drift.

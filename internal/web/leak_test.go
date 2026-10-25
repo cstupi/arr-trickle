@@ -2,7 +2,7 @@ package web
 
 import (
 	"fmt"
-	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,16 +16,6 @@ import (
 // The API key must never leave the process through the UI: not in any page, header, log line or activity
 // entry. Instances read a known fake key from all three kinds of source; every page, form and error path
 // is then rendered and the key is searched for everywhere the UI could expose it.
-
-func closedPort(t *testing.T) int {
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	port := l.Addr().(*net.TCPAddr).Port
-	l.Close()
-	return port
-}
 
 func TestKeyNeverAppearsAnywhere(t *testing.T) {
 	logs := tu.CaptureLogs(t)
@@ -49,7 +39,7 @@ name = "down"
 url = "http://127.0.0.1:%d"
 api_key_env = "ARR_TEST_KEY"
 timeout_seconds = 5
-`, tu.ArrConfigXML(t), secret, closedPort(t))
+`, tu.ArrConfigXML(t), secret, tu.FreePort(t))
 	// "down" uses the real client against a closed port, so real connection errors are rendered too.
 	factory := func(i config.Instance) (runner.Prober, error) {
 		if i.Name == "down" {
@@ -61,12 +51,8 @@ timeout_seconds = 5
 	b := e.browser(lanIP)
 	var responses []resp
 	get := func(p string) { responses = append(responses, b.get(p)) }
-	post := func(p string, f map[string]string, headers ...map[string]string) {
-		v := form()
-		for k, x := range f {
-			v.Set(k, x)
-		}
-		responses = append(responses, b.post(p, v, headers...))
+	post := func(p string, f url.Values, headers ...map[string]string) {
+		responses = append(responses, b.post(p, f, headers...))
 	}
 
 	// before login: public pages and refusals
@@ -74,7 +60,7 @@ timeout_seconds = 5
 		get(p)
 	}
 	b.login()
-	post("/login", map[string]string{"username": "admin", "password": tu.Key})
+	post("/login", form("username", "admin", "password", tu.Key))
 
 	e.sched.RunPass() // real searches (fake apps) plus a real connection failure
 	e.sched.RunPass()
@@ -88,29 +74,19 @@ timeout_seconds = 5
 		}
 	}
 	for _, name := range []string{"from-xml", "from-file", "from-env", "down"} {
-		post("/control/check", map[string]string{"name": name})
+		post("/control/check", form("name", name))
 	}
 	post("/control/dry-run", nil)
 	post("/control/run-now", nil)
-	post("/settings", map[string]string{"interval_minutes": "junk", "log_level": "junk"})
-	f := map[string]string{"kind": "radarr", "url": "http://r:1", "key_source": "api_key_env", "key_ref": "ARR_TEST_KEY"}
-	with := func(extra ...string) map[string]string {
-		m := map[string]string{}
-		for k, v := range f {
-			m[k] = v
-		}
-		for i := 0; i+1 < len(extra); i += 2 {
-			m[extra[i]] = extra[i+1]
-		}
-		return m
-	}
-	post("/settings/instances/new", with("name", "bad name", "api_key", tu.Key)) // key + invalid form
-	post("/settings/instances/new", with("name", "typed", "url", "ftp://x", "api_key", tu.Key))
-	post("/settings/instances/new", with("name", "stored", "api_key", tu.Key)) // valid: key stored
+	post("/settings", form("interval_minutes", "junk", "log_level", "junk"))
+	f := form("kind", "radarr", "url", "http://r:1", "key_source", "api_key_env", "key_ref", "ARR_TEST_KEY")
+	post("/settings/instances/new", with(f, "name", "bad name", "api_key", tu.Key)) // key + invalid form
+	post("/settings/instances/new", with(f, "name", "typed", "url", "ftp://x", "api_key", tu.Key))
+	post("/settings/instances/new", with(f, "name", "stored", "api_key", tu.Key)) // valid: key stored
 	get("/settings/instances/radarr/1")
-	post("/settings/instances/radarr/1", with("name", "stored", "original_name", "stored", "api_key", tu.Key))
-	post("/control/check", map[string]string{"name": "stored"})
-	post("/control/pause", map[string]string{"csrf": "forged"})
+	post("/settings/instances/radarr/1", with(f, "name", "stored", "original_name", "stored", "api_key", tu.Key))
+	post("/control/check", form("name", "stored"))
+	post("/control/pause", form("csrf", "forged"))
 	post("/control/pause", nil, map[string]string{"Origin": "http://evil.example"})
 	responses = append(responses, b.do("POST", "/control/pause", tu.Key, map[string]string{"Origin": origin, "Content-Type": "text/plain"}))
 	e.srv.pages["dashboard.html"] = nil // an internal error

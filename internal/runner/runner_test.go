@@ -62,7 +62,7 @@ func TestDryRunSendsNothing(t *testing.T) {
 	if !r.Searches[0].DryRun || r.Spent() != 1 || len(f.Sent()) != 0 || b.Used("lidarr") != 0 {
 		t.Fatal(r)
 	}
-	if !strings.Contains(logs.String(), "[dry run]") {
+	if !strings.Contains(logs.String(), "dry_run=true") {
 		t.Fatal(logs.String())
 	}
 }
@@ -163,23 +163,6 @@ func TestEveryClientFailureIsReported(t *testing.T) {
 		if r := RunInstance(inst("lidarr", nil), f, budget(t), false, tu.Now); !strings.Contains(r.Error, method) {
 			t.Errorf("%s: %+v", method, r)
 		}
-	}
-}
-
-func TestRunOnceContinuesAfterAFailure(t *testing.T) {
-	logs := tu.CaptureLogs(t)
-	t.Setenv("GOOD", tu.Key)
-	good := inst("radarr", func(i *config.Instance) { i.APIKeyEnv, i.URL, i.TimeoutSeconds = "GOOD", "http://127.0.0.1:1", 5 })
-	bad := inst("lidarr", func(i *config.Instance) { i.APIKeyEnv = "MISSING" })
-	reports := RunOnce([]config.Instance{bad, good}, budget(t), false)
-	if reports[0].OK() || !strings.Contains(reports[0].Error, "MISSING") || strings.Contains(reports[0].Error, tu.Key) {
-		t.Fatal(reports[0])
-	}
-	if reports[1].Name != "radarr" || reports[1].OK() { // reached, but nothing listens there
-		t.Fatal(reports[1])
-	}
-	if !strings.Contains(logs.String(), "lidarr: run failed") || strings.Contains(logs.String(), tu.Key) {
-		t.Fatal(logs.String())
 	}
 }
 

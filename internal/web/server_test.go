@@ -3,12 +3,13 @@ package web
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
-	"github.com/cstupi/arr-trickle/internal/config"
 	tu "github.com/cstupi/arr-trickle/internal/testutil"
 )
 
@@ -22,34 +23,32 @@ func concrete(pattern string) string {
 	return p
 }
 
+func endpoint(rt route) (method, path string) {
+	method, path, _ = strings.Cut(rt.pattern, " ")
+	return method, concrete(path)
+}
+
 func TestEveryRouteRequiresLogin(t *testing.T) {
-	for _, rt := range Routes { // the route table itself: a new route is covered automatically
-		e := newEnv(t, opts{})
-		e.makeAdmin()
-		path := concrete(rt.Pattern)
-		r := e.browser(lanIP).do(rt.Method, path, "", map[string]string{"Origin": origin})
-		if IsPublic(path) {
-			want(t, r.Code != 401 && r.Header().Get("Location") != "/login", "%s %s is public but asked for a login", rt.Method, path)
-			continue
-		}
-		if rt.Method == "GET" {
-			want(t, r.Code == 303 && r.Header().Get("Location") == "/login", "%s %s: %d %s", rt.Method, path, r.Code, r.Header().Get("Location"))
-		} else {
-			want(t, r.Code == 401, "%s %s: %d", rt.Method, path, r.Code)
+	for _, rt := range routes { // the route table itself: a new route is covered automatically
+		method, path := endpoint(rt)
+		r := newEnv(t, opts{admin: true}).browser(lanIP).do(method, path, "", map[string]string{"Origin": origin})
+		switch {
+		case isPublic(path):
+			want(t, r.Code != 401 && r.Header().Get("Location") != "/login", "%s is public but asked for a login", rt.pattern)
+		case method == "GET":
+			want(t, r.Code == 303 && r.Header().Get("Location") == "/login", "%s: %d %s", rt.pattern, r.Code, r.Header().Get("Location"))
+		default:
+			want(t, r.Code == 401, "%s: %d", rt.pattern, r.Code)
 		}
 	}
 }
 
 func TestOnlyLoginSetupHealthzAndStaticArePublic(t *testing.T) {
-	want(t, len(PublicPaths) == 3 && PublicPaths["/login"] && PublicPaths["/setup"] && PublicPaths["/healthz"], "%v", PublicPaths)
-	patterns := map[string]bool{}
-	for _, rt := range Routes {
-		patterns[rt.Pattern] = true
+	want(t, slices.Equal(publicPaths, []string{"/login", "/setup", "/healthz"}), "%v", publicPaths)
+	for _, p := range publicPaths {
+		want(t, slices.ContainsFunc(routes, func(rt route) bool { _, path := endpoint(rt); return path == p }), "public path %s has no route", p)
 	}
-	for p := range PublicPaths {
-		want(t, patterns[p], "public path %s has no route", p)
-	}
-	want(t, IsPublic("/static/style.css") && !IsPublic("/staticx") && !IsPublic("/settings"), "IsPublic")
+	want(t, isPublic("/static/style.css") && !isPublic("/staticx") && !isPublic("/settings"), "isPublic")
 }
 
 func TestUnknownPathsNeedLoginToo(t *testing.T) {
@@ -59,9 +58,9 @@ func TestUnknownPathsNeedLoginToo(t *testing.T) {
 }
 
 func TestEveryPostNeedsCSRFTokenAndSameOrigin(t *testing.T) {
-	for _, rt := range Routes {
-		path := concrete(rt.Pattern)
-		if rt.Method != "POST" || IsPublic(path) {
+	for _, rt := range routes {
+		method, path := endpoint(rt)
+		if method != "POST" || isPublic(path) {
 			continue
 		}
 		_, b := web(t)
@@ -81,8 +80,7 @@ func TestRefererIsAcceptedWhenOriginIsAbsent(t *testing.T) {
 }
 
 func TestLoginFormNeedsItsCSRFToken(t *testing.T) {
-	e := newEnv(t, opts{})
-	e.makeAdmin()
+	e := newEnv(t, opts{admin: true})
 	r := e.browser(lanIP).post("/login", form("username", "admin", "password", password))
 	want(t, r.Code == 403, "%d", r.Code)
 }
@@ -144,7 +142,7 @@ func TestFirstRunSetupFlow(t *testing.T) {
 	page := b.get("/setup")
 	want(t, page.Code == 200 && strings.Contains(strings.ToLower(page.text()), "setup code"), "setup page")
 	token := csrfOf(t, page.text())
-	code, _ := e.srv.Store.NewSetupCode()
+	code, _ := e.srv.store.NewSetupCode()
 	setup := func(over ...string) resp {
 		f := form("csrf", token, "code", code, "username", "admin", "password", password, "confirm", password)
 		for i := 0; i+1 < len(over); i += 2 {
@@ -166,25 +164,23 @@ func TestFirstRunSetupFlow(t *testing.T) {
 	want(t, !strings.Contains(logs.String(), password), "password logged")
 }
 
-var codeRE = regexp.MustCompile(`Setup code: (\S+)`)
-
 func TestSetupCodeIsPrintedOnceAtStartup(t *testing.T) {
-	logs := tu.CaptureLogs(t)
+	var out strings.Builder
 	e := newEnv(t, opts{})
-	if err := Announce(e.sched.Settings()); err != nil {
+	if err := Announce(e.sched.Settings(), &out); err != nil {
 		t.Fatal(err)
 	}
-	m := codeRE.FindStringSubmatch(logs.String())
-	want(t, m != nil && e.srv.Store.CheckSetupCode(m[1]), "code in the log works")
+	m := regexp.MustCompile(`Setup code: (\S+)`).FindStringSubmatch(out.String())
+	want(t, m != nil && e.srv.store.CheckSetupCode(m[1]), "the code printed works: %s", out.String())
 	e.makeAdmin()
-	before := logs.String()
-	Announce(e.sched.Settings())
-	want(t, logs.String() == before, "no code once the admin exists")
+	out.Reset()
+	Announce(e.sched.Settings(), &out)
+	want(t, out.Len() == 0, "no code once the admin exists")
 }
 
 func TestSetupIsRateLimited(t *testing.T) {
 	e := newEnv(t, opts{})
-	e.srv.Limiter.Free = 2
+	e.srv.limiter.free = 2
 	b := e.browser(lanIP)
 	token := csrfOf(t, b.get("/setup").text())
 	for range 2 {
@@ -196,20 +192,19 @@ func TestSetupIsRateLimited(t *testing.T) {
 // --- login, sessions -----------------------------------------------------------------
 
 func TestLoginRotatesSessionAndLogoutEndsIt(t *testing.T) {
-	e := newEnv(t, opts{})
-	e.makeAdmin()
+	e := newEnv(t, opts{admin: true})
 	b := e.browser(lanIP)
 	b.get("/login")
-	pre := b.cookies[Cookie]
+	pre := b.cookies[cookieName]
 	b.login()
-	post := b.cookies[Cookie]
+	post := b.cookies[cookieName]
 	want(t, pre != "" && pre != post, "the id changes on login")
 	want(t, b.get("/").Code == 200, "logged in")
-	b.cookies[Cookie] = pre
+	b.cookies[cookieName] = pre
 	want(t, b.get("/").Code == 303, "the pre-login id is dead")
-	b.cookies[Cookie] = post
+	b.cookies[cookieName] = post
 	want(t, b.post("/logout", nil).Header().Get("Location") == "/login", "logout")
-	b.cookies[Cookie] = post // replaying the old cookie after logout
+	b.cookies[cookieName] = post // replaying the old cookie after logout
 	want(t, b.get("/").Header().Get("Location") == "/login", "logout ends the session server-side")
 }
 
@@ -219,55 +214,36 @@ func TestAlreadyLoggedInLoginPageRedirects(t *testing.T) {
 }
 
 func TestCookieFlags(t *testing.T) {
-	e := newEnv(t, opts{})
-	e.makeAdmin()
+	e := newEnv(t, opts{admin: true})
 	c := strings.ToLower(e.browser(lanIP).get("/login").Header().Get("Set-Cookie"))
 	want(t, strings.Contains(c, "httponly") && strings.Contains(c, "samesite=strict") && strings.Contains(c, "path=/") && !strings.Contains(c, "secure"), "%s", c)
-	s := newEnv(t, opts{toml: "[web]\ncookie_secure = true\n"})
-	s.makeAdmin()
-	want(t, strings.Contains(strings.ToLower(s.browser(lanIP).get("/login").Header().Get("Set-Cookie")), "secure"), "cookie_secure")
-	h := newEnv(t, opts{})
-	h.makeAdmin()
-	hb := h.browser(lanIP)
-	hb.scheme = "https"
-	req := hb.get("/login")
-	_ = req
-	// httptest marks https:// requests as TLS
-	want(t, strings.Contains(strings.ToLower(req.Header().Get("Set-Cookie")), "secure"), "https request")
+	want(t, secureCookie(newEnv(t, opts{toml: "[web]\ncookie_secure = true\n", admin: true}).browser(lanIP).get("/login")), "cookie_secure")
+	hb := newEnv(t, opts{admin: true}).browser(lanIP)
+	hb.scheme = "https" // httptest marks https:// requests as TLS
+	want(t, secureCookie(hb.get("/login")), "https request")
 }
 
 func TestSecureCookieAndOriginBehindATrustedTLSProxy(t *testing.T) {
-	e := newEnv(t, opts{toml: "[web]\ntrusted_proxies = [\"10.0.0.2\"]\n"})
-	e.makeAdmin()
-	b := e.browser("10.0.0.2")
+	b := newEnv(t, opts{toml: "[web]\ntrusted_proxies = [\"10.0.0.2\"]\n", admin: true}).browser("10.0.0.2")
 	headers := map[string]string{"X-Forwarded-For": lanIP, "X-Forwarded-Proto": "https", "X-Forwarded-Host": "trickle.lan"}
 	page := b.do("GET", "/login", "", headers)
-	want(t, strings.Contains(strings.ToLower(page.Header().Get("Set-Cookie")), "secure"), "secure via proxy")
-	h := map[string]string{"Origin": "https://trickle.lan"}
-	for k, v := range headers {
-		h[k] = v
-	}
-	r := b.post("/login", form("csrf", csrfOf(t, page.text()), "username", "admin", "password", password), h)
+	want(t, secureCookie(page), "secure via proxy")
+	r := b.post("/login", form("csrf", csrfOf(t, page.text()), "username", "admin", "password", password), headers, map[string]string{"Origin": "https://trickle.lan"})
 	want(t, r.Code == 303, "login through the proxy: %d %s", r.Code, r.text())
-	u := newEnv(t, opts{})
-	u.makeAdmin()
-	want(t, !strings.Contains(strings.ToLower(u.browser(lanIP).do("GET", "/login", "", headers).Header().Get("Set-Cookie")), "secure"),
-		"the same headers from an untrusted peer are ignored")
+	want(t, !secureCookie(newEnv(t, opts{admin: true}).browser(lanIP).do("GET", "/login", "", headers)), "the same headers from an untrusted peer are ignored")
 }
 
 func TestWrongPasswordIsLoggedWithoutThePassword(t *testing.T) {
 	logs := tu.CaptureLogs(t)
-	e := newEnv(t, opts{})
-	e.makeAdmin()
+	e := newEnv(t, opts{admin: true})
 	b := e.browser(lanIP)
 	r := b.post("/login", form("csrf", csrfOf(t, b.get("/login").text()), "username", "admin", "password", "hunter2hunter2"))
 	want(t, r.Code == 401 && strings.Contains(r.text(), "Wrong username or password"), "%d", r.Code)
-	want(t, strings.Contains(logs.String(), "failed login from "+lanIP) && !strings.Contains(logs.String(), "hunter2"), "%s", logs.String())
+	want(t, strings.Contains(logs.String(), "failed login") && strings.Contains(logs.String(), "client="+lanIP) && !strings.Contains(logs.String(), "hunter2"), "%s", logs.String())
 }
 
 func TestLoginRateLimitPerIPAndGlobal(t *testing.T) {
-	e := newEnv(t, opts{})
-	e.makeAdmin()
+	e := newEnv(t, opts{admin: true})
 	attempt := func(b *browser, pw string) resp {
 		return b.post("/login", form("csrf", csrfOf(t, b.get("/login").text()), "username", "admin", "password", pw))
 	}
@@ -279,10 +255,17 @@ func TestLoginRateLimitPerIPAndGlobal(t *testing.T) {
 	secs, _ := strconv.Atoi(r.Header().Get("Retry-After"))
 	want(t, r.Code == 429 && secs >= 1, "%d %d", r.Code, secs)
 	want(t, attempt(e.browser("192.168.1.77"), password).Code == 303, "another client is not affected")
-	e.srv.Limiter = NewRateLimiter()
-	e.srv.Limiter.GlobalLimit = 3
+	e.srv.limiter = newRateLimiter()
+	e.srv.limiter.globalLimit = 3
+	want(t, attempt(e.browser("fd00::1:5"), "wrong").Code == 401, "an IPv6 client...")
+	for range 5 {
+		attempt(e.browser("fd00::1:6"), "wrong")
+	}
+	want(t, attempt(e.browser("fd00::1:7"), password).Code == 429, "...is throttled per /64, not per address")
+	e.srv.limiter = newRateLimiter()
+	e.srv.limiter.globalLimit = 3
 	for _, ip := range []string{"192.168.1.1", "192.168.1.2", "192.168.1.3"} {
-		e.srv.Limiter.Failure(ip)
+		e.srv.limiter.failure(ip)
 	}
 	want(t, attempt(e.browser("192.168.1.99"), password).Code == 429, "global ceiling")
 }
@@ -290,7 +273,7 @@ func TestLoginRateLimitPerIPAndGlobal(t *testing.T) {
 func TestSessionIdleAndAbsoluteTimeouts(t *testing.T) {
 	e, b := web(t)
 	now := time.Now()
-	e.srv.Sessions.Clock = func() time.Time { return now }
+	e.srv.sessions.clock = func() time.Time { return now }
 	now = now.Add(50 * time.Minute)
 	want(t, b.get("/").Code == 200, "active")
 	now = now.Add(61 * time.Minute)
@@ -305,7 +288,7 @@ func TestSessionIdleAndAbsoluteTimeouts(t *testing.T) {
 
 func TestPasswordResetEndsExistingSessions(t *testing.T) {
 	e, b := web(t)
-	e.srv.Store.Reset()
+	e.srv.store.Reset()
 	want(t, b.get("/").Header().Get("Location") == "/login", "reset")
 }
 
@@ -371,7 +354,7 @@ func TestControls(t *testing.T) {
 	b.post("/control/resume", nil)
 	want(t, !e.sched.Paused(), "resume")
 	b.post("/control/dry-run", nil)
-	text, _ := readFile(e.config)
+	text := fileText(t, e.config)
 	want(t, e.sched.Settings().DryRun && strings.Contains(text, "dry_run = true"), "%s", text)
 	want(t, strings.Contains(b.get("/").text(), "Dry run on"), "flash")
 	b.post("/control/dry-run", nil)
@@ -379,12 +362,16 @@ func TestControls(t *testing.T) {
 }
 
 func TestRunNowRunsAPassInTheBackground(t *testing.T) {
-	e, b := web(t)
-	e.sched.Start()
-	defer e.sched.Stop(5 * time.Second)
-	want(t, e.sched.WaitForPasses(1, 5*time.Second), "first pass")
-	b.post("/control/run-now", nil)
-	want(t, e.sched.WaitForPasses(2, 5*time.Second), "run now")
+	synctest.Test(t, func(t *testing.T) {
+		e, b := web(t)
+		e.sched.Start()
+		defer e.sched.Stop(time.Second)
+		synctest.Wait()
+		want(t, len(e.sched.Activity.Entries("")) == 1, "first pass")
+		b.post("/control/run-now", nil)
+		synctest.Wait()
+		want(t, len(e.sched.Activity.Entries("")) == 2, "run now")
+	})
 }
 
 func TestCheckButton(t *testing.T) {
@@ -432,7 +419,7 @@ func TestErrorPagesAreGeneric(t *testing.T) {
 	r = b.get("/")
 	want(t, r.Code == 500 && !strings.Contains(r.text(), "nil pointer") && !strings.Contains(r.text(), "goroutine"), "%s", r.text())
 	want(t, r.Header().Get("Cache-Control") == "no-store" && r.Header().Get("Content-Security-Policy") != "", "headers on 500")
-	want(t, strings.Contains(logs.String(), "internal error handling GET /"), "%s", logs.String())
+	want(t, strings.Contains(logs.String(), "internal error") && strings.Contains(logs.String(), "path=/"), "%s", logs.String())
 }
 
 func TestBusyServerRefusesPolitely(t *testing.T) {
@@ -443,10 +430,23 @@ func TestBusyServerRefusesPolitely(t *testing.T) {
 	want(t, b.get("/healthz").Code == 503, "busy")
 }
 
+func TestPasswordHashesAreCapped(t *testing.T) {
+	b := newEnv(t, opts{admin: true}).browser(lanIP)
+	token := csrfOf(t, b.get("/login").text())
+	for range cap(hashSlots) {
+		hashSlots <- struct{}{}
+	}
+	defer func() {
+		for range cap(hashSlots) {
+			<-hashSlots
+		}
+	}()
+	r := b.post("/login", form("csrf", token, "username", "admin", "password", password))
+	want(t, r.Code == 503, "a third concurrent hash must wait: %d", r.Code)
+}
+
 func TestHTTPServerHasTimeouts(t *testing.T) {
 	e, _ := web(t)
 	s := e.srv.HTTPServer("127.0.0.1:0")
 	want(t, s.ReadHeaderTimeout > 0 && s.ReadTimeout > 0 && s.IdleTimeout > 0 && s.MaxHeaderBytes > 0, "%+v", s)
 }
-
-var _ = config.Errorf

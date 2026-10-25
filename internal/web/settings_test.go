@@ -1,6 +1,8 @@
 package web
 
 import (
+	"errors"
+	"io/fs"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -13,33 +15,10 @@ import (
 	tu "github.com/cstupi/arr-trickle/internal/testutil"
 )
 
-func newInstance(over ...string) url.Values {
-	f := form("kind", "sonarr", "name", "sonarr", "url", "http://sonarr:8989", "key_source", "api_key_env",
-		"key_ref", "ARR_TEST_KEY", "missing", "4", "cutoff", "1", "daily_cap", "", "max_queue", "", "exclude", "3, 4",
-		"timeout_seconds", "60", "api_key", "")
-	for i := 0; i+1 < len(over); i += 2 {
-		f.Set(over[i], over[i+1])
-	}
-	return f
-}
+var sonarr = form("kind", "sonarr", "name", "sonarr", "url", "http://sonarr:8989", "key_source", "api_key_env",
+	"key_ref", "ARR_TEST_KEY", "missing", "4", "cutoff", "1", "exclude", "3, 4", "timeout_seconds", "60")
 
-func instancesOf(e *env, kind string) []config.Instance {
-	var out []config.Instance
-	for _, i := range e.sched.Settings().Instances {
-		if i.Kind == kind {
-			out = append(out, i)
-		}
-	}
-	return out
-}
-
-func fileText(t *testing.T, path string) string {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(raw)
-}
+func newInstance(over ...string) url.Values { return with(sonarr, over...) }
 
 // after returns the HTML between a field's input and the next label: where its errors are shown.
 func after(html, field string) string {
@@ -97,7 +76,7 @@ func TestAddEditAndRemoveInstances(t *testing.T) {
 	want(t, strings.Contains(b.get("/settings/instances/new?kind=sonarr").text(), "Add Sonarr instance"), "add page")
 	r := b.post("/settings/instances/new", newInstance())
 	want(t, r.Code == 303, "%d %s", r.Code, r.text())
-	s := instancesOf(e, "sonarr")[0]
+	s := e.srv.instancesOf("sonarr")[0]
 	want(t, s.Missing == 4 && s.Cutoff == 1 && slices.Equal(s.Exclude, []int{3, 4}) && s.APIKeyEnv == "ARR_TEST_KEY", "%+v", s)
 	want(t, strings.Contains(fileText(t, e.config), "exclude = [3, 4]"), "written")
 	want(t, b.post("/settings/instances/new", newInstance("name", "sonarr-4k", "url", "https://s4k.example.com")).Code == 303, "second sonarr")
@@ -122,7 +101,7 @@ func TestAddEditAndRemoveInstances(t *testing.T) {
 func TestBlankNameGetsTheDefault(t *testing.T) {
 	e, b := web(t)
 	b.post("/settings/instances/new", newInstance("name", ""))
-	want(t, len(instancesOf(e, "sonarr")) == 1 && instancesOf(e, "sonarr")[0].Name == "sonarr", "default name")
+	want(t, len(e.srv.instancesOf("sonarr")) == 1 && e.srv.instancesOf("sonarr")[0].Name == "sonarr", "default name")
 }
 
 func TestInstanceValidationErrorsAreShownNextToFields(t *testing.T) {
@@ -152,10 +131,9 @@ func TestInstanceValidationErrorsAreShownNextToFields(t *testing.T) {
 		want(t, fileText(t, e.config) == before && len(e.sched.Settings().Instances) == 1, "unchanged")
 		want(t, !strings.Contains(r.text(), tu.Key), "key echoed")
 	}
-	e, b := web(t)
+	_, b := web(t)
 	r := b.post("/settings/instances/new", newInstance("api_key", tu.Key, "name", "has space"))
 	want(t, r.Code == 400 && strings.Contains(after(r.text(), "name"), "name may only use") && !strings.Contains(r.text(), tu.Key), "unsafe name")
-	_ = e
 }
 
 func TestSeveralErrorsAtOnce(t *testing.T) {
@@ -180,7 +158,7 @@ func TestWriteOnlyAPIKey(t *testing.T) {
 	keyFile := filepath.Join(e.state, "secrets", "sonarr.key")
 	info, err := os.Stat(keyFile)
 	want(t, err == nil && info.Mode().Perm() == 0o600 && strings.TrimSpace(fileText(t, keyFile)) == tu.Key, "stored 0600")
-	s := instancesOf(e, "sonarr")[0]
+	s := e.srv.instancesOf("sonarr")[0]
 	key, _ := s.APIKey(nil)
 	want(t, s.APIKeyFile == keyFile && s.APIKeyEnv == "" && key == tu.Key, "%+v", s)
 	want(t, !strings.Contains(fileText(t, e.config), tu.Key), "not in config.toml")
@@ -191,11 +169,11 @@ func TestWriteOnlyAPIKey(t *testing.T) {
 	// saving again without a key keeps the stored one
 	r = b.post("/settings/instances/sonarr/0", newInstance("original_name", "sonarr", "key_source", "api_key_file", "key_ref", ref, "missing", "7"))
 	_, err = os.Stat(keyFile)
-	want(t, r.Code == 303 && err == nil && instancesOf(e, "sonarr")[0].Missing == 7, "kept")
+	want(t, r.Code == 303 && err == nil && e.srv.instancesOf("sonarr")[0].Missing == 7, "kept")
 	// switching to another source deletes the stored key
 	b.post("/settings/instances/sonarr/0", newInstance("original_name", "sonarr", "key_source", "api_key_env"))
 	_, err = os.Stat(keyFile)
-	want(t, os.IsNotExist(err), "deleted")
+	want(t, errors.Is(err, fs.ErrNotExist), "deleted")
 }
 
 func TestRemovingAnInstanceDeletesItsStoredKey(t *testing.T) {
@@ -203,7 +181,7 @@ func TestRemovingAnInstanceDeletesItsStoredKey(t *testing.T) {
 	b.post("/settings/instances/new", newInstance("api_key", tu.Key))
 	b.post("/settings/instances/sonarr/0/delete", form("name", "sonarr"))
 	_, err := os.Stat(filepath.Join(e.state, "secrets", "sonarr.key"))
-	want(t, os.IsNotExist(err), "deleted")
+	want(t, errors.Is(err, fs.ErrNotExist), "deleted")
 }
 
 func TestStaleFormsChangeNothing(t *testing.T) {
@@ -230,7 +208,7 @@ func TestReadOnlyConfigIsExplained(t *testing.T) {
 	dir := filepath.Dir(e.config)
 	os.Chmod(dir, 0o500)
 	defer os.Chmod(dir, 0o700)
-	if writable(dir) {
+	if e.srv.editor.problem() == "" {
 		t.Skip("running as root: permissions don't apply")
 	}
 	want(t, strings.Contains(b.get("/settings").text(), "Saving is unavailable"), "shown")
@@ -259,24 +237,41 @@ func TestEnvConfiguredSetupSavesANewFile(t *testing.T) {
 	e := newEnv(t, opts{noFile: true})
 	b := e.browser(lanIP).login()
 	_, err := os.Stat(e.config)
-	want(t, os.IsNotExist(err), "no file yet")
+	want(t, errors.Is(err, fs.ErrNotExist), "no file yet")
 	want(t, b.post("/settings/instances/new", newInstance()).Code == 303, "saved")
 	s, err := config.Load(e.config, config.Environ{}, false)
 	want(t, err == nil && s.Instances[0].Name == "sonarr", "%v", err)
 	_, err = os.Stat(e.config + ".bak")
-	want(t, os.IsNotExist(err), "no backup of nothing")
+	want(t, errors.Is(err, fs.ErrNotExist), "no backup of nothing")
 }
 
 func TestMissingConfigDirIsExplained(t *testing.T) {
 	e, b := web(t)
-	e.srv.Editor.Path = filepath.Join(t.TempDir(), "nope", "config.toml")
+	e.srv.editor.path = filepath.Join(t.TempDir(), "nope", "config.toml")
 	want(t, strings.Contains(b.get("/settings").text(), "does not exist"), "explained")
 }
 
 func TestFieldErrorsMapping(t *testing.T) {
-	errs, general := FieldErrors(os.ErrNotExist, "")
+	errs, general := splitErrors(os.ErrNotExist, "")
 	want(t, len(errs) == 0 && len(general) == 1, "non-config errors are general")
 	_, err := config.Parse(map[string]any{"sonarr": []any{map[string]any{"url": "x", "api_key_env": "K", "bogus": int64(1)}}}, true)
-	errs, general = FieldErrors(err, "sonarr[0]")
+	errs, general = splitErrors(err, "sonarr[0]")
 	want(t, len(errs["url"]) == 1 && len(general) == 1 && strings.Contains(general[0], "unknown setting"), "%v %v", errs, general)
+}
+
+func TestAStoredKeyIsNeverSharedOrDeletedFromUnderAnotherInstance(t *testing.T) {
+	e, b := web(t)
+	keyFile := filepath.Join(e.state, "secrets", "x.key")
+	b.post("/settings/instances/new", newInstance("name", "x", "api_key", tu.Key))
+	// renamed without a new key: it keeps reading secrets/x.key
+	want(t, b.post("/settings/instances/sonarr/0", newInstance("name", "y", "original_name", "x", "key_source", "api_key_file", "key_ref", keyFile)).Code == 303, "rename")
+	r := b.post("/settings/instances/new", newInstance("name", "x", "api_key", tu.Key))
+	want(t, r.Code == 400 && strings.Contains(after(r.text(), "name"), "Another instance already reads"), "%s", after(r.text(), "name"))
+	b.post("/settings/instances/new", newInstance("name", "x")) // no key: fine
+	b.post("/settings/instances/sonarr/1/delete", form("name", "x"))
+	_, err := os.Stat(keyFile)
+	want(t, err == nil, "deleting x must not delete y's key")
+	b.post("/settings/instances/sonarr/0/delete", form("name", "y"))
+	_, err = os.Stat(keyFile)
+	want(t, errors.Is(err, fs.ErrNotExist), "the last user is gone: the key goes too")
 }

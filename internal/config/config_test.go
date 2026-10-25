@@ -1,6 +1,7 @@
 package config
 
 import (
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -13,9 +14,7 @@ import (
 
 func minimal(over map[string]any) map[string]any {
 	entry := map[string]any{"url": "http://sonarr:8989", "api_key_env": "K"}
-	for k, v := range over {
-		entry[k] = v
-	}
+	maps.Copy(entry, over)
 	return map[string]any{"sonarr": []any{entry}}
 }
 
@@ -95,8 +94,10 @@ func TestRejectsBadSettings(t *testing.T) {
 		{map[string]any{"sonarr": "nope"}, "table"},
 	}
 	for _, c := range cases {
-		_, err := Parse(c.data, false)
-		wantErr(t, err, c.msg)
+		t.Run(c.msg, func(t *testing.T) {
+			_, err := Parse(c.data, false)
+			wantErr(t, err, c.msg)
+		})
 	}
 }
 
@@ -111,12 +112,13 @@ func TestDuplicateNamesRejected(t *testing.T) {
 
 func TestPrivateAndPublicHosts(t *testing.T) {
 	for _, h := range []string{"localhost", "sonarr", "127.0.0.1", "192.168.0.10", "10.0.0.2", "nas.local", "::1"} {
-		if !IsPrivateHost(h) {
+		if !isPrivateHost(h) {
 			t.Errorf("%s should be private", h)
 		}
 	}
-	for _, h := range []string{"example.com", "8.8.8.8", "sonarr.mydomain.net"} {
-		if IsPrivateHost(h) {
+	// IPv6 literals have no dots: they must be judged as addresses, not as Docker service names.
+	for _, h := range []string{"example.com", "8.8.8.8", "sonarr.mydomain.net", "2606:4700::1111"} {
+		if isPrivateHost(h) {
 			t.Errorf("%s should be public", h)
 		}
 	}
@@ -127,6 +129,9 @@ func TestPlainHTTPToPublicHostRefusedUnlessAllowed(t *testing.T) {
 	wantErr(t, err, "plain http")
 	mustParse(t, with(minimal(map[string]any{"url": "http://sonarr.example.com"}), "allow_insecure_http", true))
 	mustParse(t, minimal(map[string]any{"url": "https://sonarr.example.com"}))
+	_, err = Parse(minimal(map[string]any{"url": "http://[2606:4700::1111]:8989"}), false)
+	wantErr(t, err, "plain http")
+	mustParse(t, minimal(map[string]any{"url": "http://[fd00::5]:8989"}))
 }
 
 func TestKeyFromArrConfig(t *testing.T) {
@@ -334,8 +339,10 @@ func TestRejectsBadWebSettings(t *testing.T) {
 		{map[string]any{"trusted_proxies": []any{int64(1)}}, "web.trusted_proxies must be a list"},
 	}
 	for _, c := range cases {
-		_, err := Parse(with(minimal(nil), "web", c.web), false)
-		wantErr(t, err, c.msg)
+		t.Run(c.msg, func(t *testing.T) {
+			_, err := Parse(with(minimal(nil), "web", c.web), false)
+			wantErr(t, err, c.msg)
+		})
 	}
 }
 

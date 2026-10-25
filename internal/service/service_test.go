@@ -1,6 +1,7 @@
 package service
 
 import (
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -8,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/cstupi/arr-trickle/internal/apps"
@@ -33,11 +35,13 @@ func settings(dir string, instances ...config.Instance) config.Settings {
 }
 
 type clients struct {
-	mu   sync.Mutex
-	made map[string]*tu.Fake
+	mu    sync.Mutex
+	made  map[string]*tu.Fake
+	calls atomic.Int32 // one per instance per pass
 }
 
 func (c *clients) factory(i config.Instance) (runner.Prober, error) {
+	c.calls.Add(1)
 	if strings.HasPrefix(i.Name, "broken") {
 		return nil, config.Errorf("", "%s: environment variable K is empty", i.Name)
 	}
@@ -73,7 +77,7 @@ func TestRunPassRecordsActivityStatusAndHeartbeat(t *testing.T) {
 	if ok.BudgetUsed != 2 || ok.BudgetCap != 10 || *ok.Report.MissingTotal != 5 || *ok.Report.Queue != 3 || ok.LastPass.IsZero() {
 		t.Fatal(ok)
 	}
-	if snap.LastPass.IsZero() || snap.Running || !strings.Contains(broken.Report.Error, "empty") {
+	if snap.LastPass.IsZero() || snap.Running || !strings.Contains(broken.Report.Error, "empty") || strings.Contains(broken.Report.Error, tu.Key) {
 		t.Fatal(snap)
 	}
 }
@@ -89,48 +93,82 @@ func TestDryRunPassIsLoggedAsDryRun(t *testing.T) {
 	}
 }
 
-func TestBackgroundLoopFirstPassAndRunNow(t *testing.T) {
-	s := New(settings(t.TempDir()), newClients().factory, nil)
-	s.Start()
-	defer s.Stop(5 * time.Second)
-	if !s.WaitForPasses(1, 5*time.Second) || s.Snapshot().NextPass.IsZero() {
-		t.Fatal("first pass")
-	}
-	s.RunNow()
-	if !s.WaitForPasses(2, 5*time.Second) || len(s.Activity.Entries("")) != 2 {
-		t.Fatal("run now")
-	}
+// The loop tests run in a synctest bubble: fake time, and synctest.Wait returns once the
+// scheduler goroutine is idle again.
+
+func TestBackgroundLoopFirstPassRunNowAndSchedule(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		c := newClients()
+		s := New(settings(t.TempDir()), c.factory, nil)
+		s.Start()
+		defer s.Stop(time.Second)
+		passes := func() int32 { synctest.Wait(); return c.calls.Load() }
+		if passes() != 1 || s.Snapshot().NextPass.IsZero() {
+			t.Fatal("the first pass runs at startup")
+		}
+		s.RunNow()
+		if passes() != 2 {
+			t.Fatal("run now")
+		}
+		time.Sleep(59 * time.Minute)
+		if passes() != 2 {
+			t.Fatal("too early")
+		}
+		time.Sleep(2 * time.Minute)
+		if passes() != 3 {
+			t.Fatal("the scheduled pass")
+		}
+	})
 }
 
 func TestPauseIsPersistedAndRunNowStillWorks(t *testing.T) {
-	dir := t.TempDir()
-	c := newClients()
-	s := New(settings(dir), c.factory, nil)
-	if err := s.Pause(); err != nil {
-		t.Fatal(err)
-	}
-	if !New(settings(dir), c.factory, nil).Paused() {
-		t.Fatal("pause must survive a restart")
-	}
-	s.Start()
-	defer s.Stop(5 * time.Second)
-	if s.WaitForPasses(1, 500*time.Millisecond) {
-		t.Fatal("the due pass must be skipped while paused")
-	}
-	if _, err := os.Stat(filepath.Join(dir, "heartbeat")); err != nil {
-		t.Fatal("paused, but alive: the heartbeat keeps the healthcheck green")
-	}
-	if snap := s.Snapshot(); !snap.Paused || !snap.NextPass.IsZero() {
-		t.Fatal(snap)
-	}
-	s.RunNow()
-	if !s.WaitForPasses(1, 5*time.Second) {
-		t.Fatal("run now while paused")
-	}
-	s.Resume()
-	if New(settings(dir), c.factory, nil).Paused() {
-		t.Fatal("resume must persist")
-	}
+	synctest.Test(t, func(t *testing.T) {
+		dir := t.TempDir()
+		c := newClients()
+		s := New(settings(dir), c.factory, nil)
+		if err := s.Pause(); err != nil || !New(settings(dir), c.factory, nil).Paused() {
+			t.Fatal("pause must survive a restart", err)
+		}
+		s.Start()
+		defer s.Stop(time.Second)
+		synctest.Wait()
+		if c.calls.Load() != 0 {
+			t.Fatal("the due pass must be skipped while paused")
+		}
+		if _, err := os.Stat(filepath.Join(dir, "heartbeat")); err != nil {
+			t.Fatal("paused, but alive: the heartbeat keeps the healthcheck green")
+		}
+		if snap := s.Snapshot(); !snap.Paused || !snap.NextPass.IsZero() {
+			t.Fatal(snap)
+		}
+		s.RunNow()
+		synctest.Wait()
+		if c.calls.Load() != 1 {
+			t.Fatal("run now while paused")
+		}
+		if s.Resume(); New(settings(dir), c.factory, nil).Paused() {
+			t.Fatal("resume must persist")
+		}
+	})
+}
+
+func TestLoopSurvivesAPanic(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		logs := tu.CaptureLogs(t)
+		var calls atomic.Int32
+		s := New(settings(t.TempDir()), func(config.Instance) (runner.Prober, error) {
+			calls.Add(1)
+			panic("bug")
+		}, nil)
+		s.Start()
+		defer s.Stop(time.Second)
+		synctest.Wait()
+		s.RunNow()
+		synctest.Wait()
+		if calls.Load() != 2 || !strings.Contains(logs.String(), "pass failed unexpectedly") {
+			t.Fatal(calls.Load(), logs.String())
+		}
+	})
 }
 
 func TestHotReload(t *testing.T) {
@@ -147,35 +185,8 @@ func TestHotReload(t *testing.T) {
 		t.Fatal(snap)
 	}
 	s.RunPass()
-	var names []string
-	for k := range c.made {
-		names = append(names, k)
-	}
-	slices.Sort(names)
-	if !slices.Equal(names, []string{"a", "b", "c"}) || reloaded.Load() != 1 {
+	if names := slices.Sorted(maps.Keys(c.made)); !slices.Equal(names, []string{"a", "b", "c"}) || reloaded.Load() != 1 {
 		t.Fatal(names)
-	}
-}
-
-func TestLoopSurvivesAPanic(t *testing.T) {
-	logs := tu.CaptureLogs(t)
-	var calls atomic.Int32
-	s := New(settings(t.TempDir()), func(config.Instance) (runner.Prober, error) {
-		calls.Add(1)
-		panic("bug")
-	}, nil)
-	s.Start()
-	defer s.Stop(5 * time.Second)
-	deadline := time.Now().Add(5 * time.Second)
-	for calls.Load() < 1 && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
-	s.RunNow()
-	for calls.Load() < 2 && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
-	if calls.Load() != 2 || !strings.Contains(logs.String(), "pass failed unexpectedly") {
-		t.Fatal(calls.Load(), logs.String())
 	}
 }
 
@@ -206,8 +217,7 @@ func TestPassesNeverOverlap(t *testing.T) {
 	}, nil)
 	var wg sync.WaitGroup
 	for range 4 {
-		wg.Add(1)
-		go func() { defer wg.Done(); s.RunPass() }()
+		wg.Go(func() { s.RunPass() })
 	}
 	wg.Wait()
 	if overlaps.Load() != 0 || len(s.Activity.Entries("")) != 4 {

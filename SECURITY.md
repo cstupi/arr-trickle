@@ -35,9 +35,11 @@ The UI's controls are listed below so you can judge them yourself.
   password is reset. A new id is issued on login, so a planted pre-login id is useless.
 - **CSRF.** Every POST needs the session's CSRF token, and its `Origin` (or, failing that, `Referer`)
   must match the host the request was sent to. POST bodies must be form-encoded and at most 64 KiB.
-- **Login throttling.** After 5 failures, each client IP gets an exponential backoff (up to 15 minutes).
-  There is also a global ceiling of 30 failures per 10 minutes. Failures are logged with the client IP, never
-  with the password or username. Note that the global ceiling also locks the owner out while an attack is going on.
+- **Login throttling.** After 5 failures, each client gets an exponential backoff (up to 15 minutes); IPv6
+  clients are counted per /64, so rotating addresses doesn't help. There is also a global ceiling of 30
+  failures per 10 minutes, and at most two password hashes (~32 MiB each) run at once. Failures are logged
+  with the client IP, never with the password or username. Note that the global ceiling also locks the
+  owner out while an attack is going on.
 - **Response headers.** `Content-Security-Policy: default-src 'self'; script-src 'none'; object-src 'none';
   base-uri 'none'; frame-ancestors 'none'; form-action 'self'`, plus `X-Content-Type-Options: nosniff`,
   `X-Frame-Options: DENY` and `Cache-Control: no-store` on every page. The UI has no JavaScript at all, and
@@ -64,10 +66,11 @@ The UI's controls are listed below so you can judge them yourself.
 - **Write-only key field.** A key pasted into the UI is checked for format and written to
   `/state/secrets/<instance>.key` (mode 0600, in a 0700 directory, via a temp file that is created with
   mode 0600). The instance then reads it with `api_key_file`. The key is never rendered again, never logged, and never written to
-  `config.toml`. Removing the instance, or switching it to another key source, deletes the file.
+  `config.toml`. Removing the instance, or switching it to another key source, deletes the file once no
+  instance reads it, and a stored key file is never shared between two instances.
   Before 0.3.0, arr-trickle never wrote a key to disk; this field is the one exception, and you choose whether to use it.
 - **Otherwise not stored.** Keys are read at run time from the app's own `config.xml`, a secret file or an
-  environment variable. They are never included in error messages, the activity log or `repr()`.
+  environment variable. They are never included in error messages, the activity log or `%v` output.
   A unit test configures all three kinds of source with a known fake key, then renders every page and error
   path. It asserts that the key appears in no response body, header, log line, activity entry or settings file.
 - **Keys are only sent where you configured.** HTTP redirects are not followed, so a redirect cannot
@@ -83,7 +86,8 @@ The UI's controls are listed below so you can judge them yourself.
   with hashes in `go.sum`: `golang.org/x/crypto`, for scrypt only (maintained by the Go team), and
   `github.com/BurntSushi/toml`, for reading `config.toml` (itself dependency-free). The HTTP server,
   HTML templating (contextual autoescaping), cookies and sessions are all Go's standard
-  library. CI runs `go mod verify`, staticcheck and govulncheck, Dependabot watches `go.mod`, and Trivy
+  library. CI runs `go mod verify`, `go fix -diff` (modern idioms), staticcheck and govulncheck (pinned
+  in `tools/go.mod`), on the toolchain pinned in `go.mod`. Dependabot watches both modules, and Trivy
   scans the image.
 - **Container.** The image is `FROM scratch`: the binary and CA certificates, with no shell, package
   manager, interpreter or OS packages, so there is nothing else to patch or exploit. It runs as a non-root

@@ -13,8 +13,8 @@ import (
 	"time"
 )
 
-// tu.Key, repeated here: testutil imports this package.
-var tu = struct{ Key string }{"fakefakefakefakefakefakefakefake"}
+// key is testutil.Key, repeated here: testutil imports this package.
+const key = "fakefakefakefakefakefakefakefake"
 
 type seen struct {
 	method, path string
@@ -47,7 +47,7 @@ func (a *fakeApp) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		json.NewEncoder(w).Encode(v)
 	}
-	if r.Header.Get("X-Api-Key") != tu.Key {
+	if r.Header.Get("X-Api-Key") != key {
 		send(401, map[string]any{"error": "unauthorized"})
 		return
 	}
@@ -94,10 +94,11 @@ func (a *fakeApp) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func setup(t *testing.T) (*Client, *fakeApp) {
+	t.Helper()
 	app := &fakeApp{}
 	srv := httptest.NewServer(app)
 	t.Cleanup(srv.Close)
-	c, err := New("lidarr", srv.URL, tu.Key, 5*time.Second)
+	c, err := New("lidarr", srv.URL, key, 5*time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +142,7 @@ func TestSendsKeyHeaderAndUserAgent(t *testing.T) {
 	c, app := setup(t)
 	c.Status()
 	h := app.last().header
-	if h.Get("X-Api-Key") != tu.Key || !strings.HasPrefix(h.Get("User-Agent"), "arr-trickle/") {
+	if h.Get("X-Api-Key") != key || !strings.HasPrefix(h.Get("User-Agent"), "arr-trickle/") {
 		t.Fatal(h)
 	}
 }
@@ -206,7 +207,7 @@ func TestUnreachableAndTimeout(t *testing.T) {
 	l, _ := net.Listen("tcp", "127.0.0.1:0")
 	addr := l.Addr().String()
 	l.Close()
-	c, _ := New("radarr", "http://"+addr, tu.Key, 2*time.Second)
+	c, _ := New("radarr", "http://"+addr, key, 2*time.Second)
 	_, err := c.Status()
 	wantErr(t, err, "GET /system/status")
 	slow, _ := setup(t)
@@ -218,27 +219,27 @@ func TestUnreachableAndTimeout(t *testing.T) {
 func TestStringHidesKey(t *testing.T) {
 	c, _ := setup(t)
 	for _, s := range []string{c.String(), fmt.Sprintf("%v %+v %#v %s", c, c, c, c)} {
-		if strings.Contains(s, tu.Key) {
+		if strings.Contains(s, key) {
 			t.Fatal(s)
 		}
 	}
 }
 
 func TestRejectsNonHTTPScheme(t *testing.T) {
-	_, err := New("radarr", "file:///etc/passwd", tu.Key, time.Second)
+	_, err := New("radarr", "file:///etc/passwd", key, time.Second)
 	wantErr(t, err, "scheme")
 }
 
 func TestValidationErrorsAreReported(t *testing.T) {
 	c, _ := setup(t)
-	_, err := c.Request("GET", "/invalid", nil)
-	wantErr(t, err, "Path: Folder does not exist")
-	_, err = c.Request("GET", "/problem", nil)
-	wantErr(t, err, "$.addOptions.monitor: could not be converted")
-	_, err = c.Request("GET", "/message", nil)
-	wantErr(t, err, "already exists")
-	_, err = c.Request("GET", "/servererror", nil)
-	wantErr(t, err, "HTTP 500")
+	for path, msg := range map[string]string{
+		"/invalid": "Path: Folder does not exist", "/problem": "$.addOptions.monitor: could not be converted",
+		"/message": "already exists", "/servererror": "HTTP 500",
+	} {
+		_, err := c.Request("GET", path, nil)
+		wantErr(t, err, msg)
+	}
+	_, err := c.Request("GET", "/servererror", nil)
 	if strings.Contains(err.Error(), "internals") {
 		t.Fatal(err)
 	}
@@ -247,20 +248,16 @@ func TestValidationErrorsAreReported(t *testing.T) {
 func TestUnexpectedShapes(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(`"x"`)) }))
 	defer srv.Close()
-	c, _ := New("sonarr", srv.URL, tu.Key, time.Second)
-	if _, err := c.Status(); err == nil {
-		t.Fatal("status")
-	}
-	if _, err := c.Health(); err == nil {
-		t.Fatal("health")
-	}
-	if _, err := c.QueueSize(); err == nil {
-		t.Fatal("queue")
-	}
-	if _, err := c.UpgradeProfiles(); err == nil {
-		t.Fatal("profiles")
-	}
-	if _, err := c.Wanted("missing", 1); err == nil {
-		t.Fatal("wanted")
+	c, _ := New("sonarr", srv.URL, key, time.Second)
+	for name, call := range map[string]func() error{
+		"status":   func() error { _, err := c.Status(); return err },
+		"health":   func() error { _, err := c.Health(); return err },
+		"queue":    func() error { _, err := c.QueueSize(); return err },
+		"profiles": func() error { _, err := c.UpgradeProfiles(); return err },
+		"wanted":   func() error { _, err := c.Wanted("missing", 1); return err },
+	} {
+		if err := call(); err == nil || !strings.Contains(err.Error(), "unexpected response shape") {
+			t.Errorf("%s: %v", name, err)
+		}
 	}
 }

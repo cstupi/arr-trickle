@@ -15,15 +15,14 @@ import (
 // The instance name becomes a file name, so it must not be able to climb out of the secrets dir.
 var safeName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 
-// Dir is the secrets directory.
-func Dir(stateDir string) string { return filepath.Join(stateDir, "secrets") }
+func dir(stateDir string) string { return filepath.Join(stateDir, "secrets") }
 
 // Path is where name's key goes, if name is usable as a file name.
 func Path(stateDir, name string) (string, error) {
 	if !safeName.MatchString(name) {
 		return "", config.Errorf("name", "to store a key, the name may only use letters, digits, '.', '-' and '_' (max 64)")
 	}
-	return filepath.Join(Dir(stateDir), name+".key"), nil
+	return filepath.Join(dir(stateDir), name+".key"), nil
 }
 
 // Store writes the key and returns the path to use as api_key_file. The key is validated, never echoed.
@@ -35,10 +34,10 @@ func Store(stateDir, name, key string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(Dir(stateDir), 0o700); err != nil {
+	if err := os.MkdirAll(dir(stateDir), 0o700); err != nil {
 		return "", err
 	}
-	if err := os.Chmod(Dir(stateDir), 0o700); err != nil {
+	if err := os.Chmod(dir(stateDir), 0o700); err != nil {
 		return "", err
 	}
 	return path, state.AtomicWrite(path, []byte(key+"\n"), 0o600)
@@ -49,7 +48,7 @@ func IsManaged(stateDir, path string) bool {
 	if path == "" || !strings.HasSuffix(path, ".key") {
 		return false
 	}
-	dir, err1 := filepath.Abs(Dir(stateDir))
+	dir, err1 := filepath.Abs(dir(stateDir))
 	file, err2 := filepath.Abs(path)
 	return err1 == nil && err2 == nil && filepath.Dir(file) == dir
 }

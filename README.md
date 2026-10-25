@@ -192,7 +192,7 @@ and `LOG_LEVEL`. The same variables exist for `RADARR_*` and `LIDARR_*`.
 
 ```sh
 go build ./cmd/arr-trickle   # or: docker build -t arr-trickle .
-scripts/check.sh         # gofmt, go vet, staticcheck, govulncheck, tests with -race and coverage >= 90% (in Docker)
+scripts/check.sh         # scripts/test.sh in Docker: gofmt, go fix, vet, staticcheck, govulncheck, tests (-race, coverage >= 90%)
 scripts/integration.sh   # starts throwaway Sonarr/Radarr/Lidarr and runs the contract tests against them
 ```
 

@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -26,10 +25,11 @@ func run(args ...string) (int, string, string) {
 }
 
 func writeConfig(t *testing.T) (string, string) {
+	t.Helper()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
-	os.WriteFile(path, []byte(fmt.Sprintf("state_dir = %q\n[web]\nenabled = false\n[[radarr]]\nurl = \"http://127.0.0.1:9\"\n"+
-		"api_key_from = %q\ntimeout_seconds = 5\n", dir, tu.ArrConfigXML(t))), 0o600)
+	os.WriteFile(path, fmt.Appendf(nil, "state_dir = %q\n[web]\nenabled = false\n[[radarr]]\nurl = \"http://127.0.0.1:9\"\n"+
+		"api_key_from = %q\ntimeout_seconds = 5\n", dir, tu.ArrConfigXML(t)), 0o600)
 	return path, dir
 }
 
@@ -62,7 +62,7 @@ func TestValidate(t *testing.T) {
 func TestValidateBadKeySource(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "c.toml")
-	os.WriteFile(path, []byte(fmt.Sprintf("[[radarr]]\nurl = \"http://r:1\"\napi_key_from = %q\n", filepath.Join(dir, "missing.xml"))), 0o600)
+	os.WriteFile(path, fmt.Appendf(nil, "[[radarr]]\nurl = \"http://r:1\"\napi_key_from = %q\n", filepath.Join(dir, "missing.xml")), 0o600)
 	if code, _, errs := run("--config", path, "validate"); code != 2 || !strings.Contains(errs, "cannot read") {
 		t.Fatal(errs)
 	}
@@ -124,11 +124,11 @@ func TestResetPasswordPrintsANewSetupCode(t *testing.T) {
 func TestRunNeedsInstancesUnlessTheWebUICanAddThem(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "c.toml")
-	os.WriteFile(path, []byte(fmt.Sprintf("state_dir = %q\n[web]\nenabled = false\n", dir)), 0o600)
+	os.WriteFile(path, fmt.Appendf(nil, "state_dir = %q\n[web]\nenabled = false\n", dir), 0o600)
 	if code, out, _ := run("--config", path, "run"); code != 2 || !strings.Contains(out, "no apps configured") {
 		t.Fatal(out)
 	}
-	os.WriteFile(path, []byte(fmt.Sprintf("state_dir = %q\n", dir)), 0o600)
+	os.WriteFile(path, fmt.Appendf(nil, "state_dir = %q\n", dir), 0o600)
 	if code, _, _ := run("--config", path, "run", "--once"); code != 2 {
 		t.Fatal("run --once needs instances")
 	}
@@ -142,7 +142,7 @@ func TestStateDirMustBeCreatable(t *testing.T) {
 	blocker := filepath.Join(dir, "file")
 	os.WriteFile(blocker, nil, 0o600)
 	path := filepath.Join(dir, "c.toml")
-	os.WriteFile(path, []byte(fmt.Sprintf("state_dir = %q\n[[radarr]]\nurl = \"http://r:1\"\napi_key_env = \"K\"\n", filepath.Join(blocker, "state"))), 0o600)
+	os.WriteFile(path, fmt.Appendf(nil, "state_dir = %q\n[[radarr]]\nurl = \"http://r:1\"\napi_key_env = \"K\"\n", filepath.Join(blocker, "state")), 0o600)
 	if code, _, _ := run("--config", path, "run", "--once"); code != 1 {
 		t.Fatal(code)
 	}
@@ -151,36 +151,23 @@ func TestStateDirMustBeCreatable(t *testing.T) {
 	}
 }
 
-func TestLogFormat(t *testing.T) {
-	var buf bytes.Buffer
-	SetupLogging(&buf, "WARNING")
-	defer SetupLogging(os.Stdout, "INFO")
-	h := defaultHandler()
-	if h == nil {
-		t.Fatal("no handler")
+func TestLogLevelFromSettings(t *testing.T) {
+	path, _ := writeConfig(t)
+	raw, _ := os.ReadFile(path)
+	os.WriteFile(path, append([]byte("log_level = \"WARNING\"\n"), raw...), 0o600)
+	_, out, _ := run("--config", path, "run", "--once")
+	if strings.Contains(out, "level=INFO") || !strings.Contains(out, "level=WARN") {
+		t.Fatal(out)
 	}
-	logWarn("hello")
-	logInfo("hidden")
-	if !strings.Contains(buf.String(), " WARNING hello") || strings.Contains(buf.String(), "hidden") {
-		t.Fatal(buf.String())
-	}
-}
-
-func freePort(t *testing.T) int {
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer l.Close()
-	return l.Addr().(*net.TCPAddr).Port
 }
 
 // serve runs `run` until the process gets SIGTERM, like `docker stop`.
 func serve(t *testing.T, toml string, ready func(stateDir string) bool) (int, string) {
+	t.Helper()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
-	os.WriteFile(path, []byte(fmt.Sprintf("state_dir = %q\n%s", dir, toml)), 0o600)
-	var out syncBuffer
+	os.WriteFile(path, fmt.Appendf(nil, "state_dir = %q\n%s", dir, toml), 0o600)
+	var out tu.Logs
 	done := make(chan int, 1)
 	go func() { done <- Main([]string{"--config", path, "run"}, &out, &out) }()
 	deadline := time.Now().Add(10 * time.Second)
@@ -200,20 +187,8 @@ func serve(t *testing.T, toml string, ready func(stateDir string) bool) (int, st
 	return 0, ""
 }
 
-type syncBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *syncBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
-}
-func (b *syncBuffer) String() string { b.mu.Lock(); defer b.mu.Unlock(); return b.buf.String() }
-
 func TestRunServesTheWebUIUntilSIGTERM(t *testing.T) {
-	port := freePort(t)
+	port := tu.FreePort(t)
 	healthz := func(string) bool {
 		resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/healthz", port))
 		if err != nil {
@@ -224,7 +199,7 @@ func TestRunServesTheWebUIUntilSIGTERM(t *testing.T) {
 		return string(body) == "ok"
 	}
 	code, out := serve(t, fmt.Sprintf("[web]\nlisten = \"127.0.0.1\"\nport = %d\n", port), healthz)
-	if code != 0 || !strings.Contains(out, "Setup code: ") || !strings.Contains(out, "web UI listening on 127.0.0.1:") {
+	if code != 0 || !strings.Contains(out, "Setup code: ") || !strings.Contains(out, `msg="web UI listening" addr=127.0.0.1:`) {
 		t.Fatal(code, out)
 	}
 }
@@ -244,7 +219,7 @@ func TestRunReportsAPortInUse(t *testing.T) {
 	defer l.Close()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
-	os.WriteFile(path, []byte(fmt.Sprintf("state_dir = %q\n[web]\nlisten = \"127.0.0.1\"\nport = %d\n", dir, l.Addr().(*net.TCPAddr).Port)), 0o600)
+	os.WriteFile(path, fmt.Appendf(nil, "state_dir = %q\n[web]\nlisten = \"127.0.0.1\"\nport = %d\n", dir, l.Addr().(*net.TCPAddr).Port), 0o600)
 	if code, out, _ := run("--config", path, "run"); code != 1 || !strings.Contains(out, "web UI stopped") {
 		t.Fatal(code, out)
 	}

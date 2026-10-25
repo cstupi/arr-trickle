@@ -8,16 +8,14 @@ package integration
 import (
 	"fmt"
 	"io"
-	"log/slog"
-	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -27,6 +25,7 @@ import (
 	"github.com/cstupi/arr-trickle/internal/runner"
 	"github.com/cstupi/arr-trickle/internal/service"
 	"github.com/cstupi/arr-trickle/internal/state"
+	tu "github.com/cstupi/arr-trickle/internal/testutil"
 	"github.com/cstupi/arr-trickle/internal/web"
 )
 
@@ -180,13 +179,7 @@ func addSample(t *testing.T, kind string, c *client.Client) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	exists := false
-	for _, f := range folders.([]any) {
-		if strings.TrimRight(fmt.Sprint(asMap(t, f)["path"]), "/") == root {
-			exists = true
-		}
-	}
-	if !exists {
+	if !slices.ContainsFunc(folders.([]any), func(f any) bool { return strings.TrimRight(fmt.Sprint(asMap(t, f)["path"]), "/") == root }) {
 		body := map[string]any{"path": root}
 		if kind == "lidarr" {
 			body["name"], body["defaultQualityProfileId"], body["defaultMetadataProfileId"] = "media", 1, 1
@@ -232,6 +225,7 @@ func addSample(t *testing.T, kind string, c *client.Client) {
 }
 
 func commandIDs(t *testing.T, c *client.Client) map[string]bool {
+	t.Helper()
 	v, err := c.Request("GET", "/command", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -293,17 +287,9 @@ func TestEndToEndSearchOfARealMissingItem(t *testing.T) {
 
 // --- the web UI, end to end ---------------------------------------------------------
 
-type logBuf struct {
-	mu sync.Mutex
-	b  strings.Builder
-}
-
-func (l *logBuf) Write(p []byte) (int, error) { l.mu.Lock(); defer l.mu.Unlock(); return l.b.Write(p) }
-func (l *logBuf) String() string              { l.mu.Lock(); defer l.mu.Unlock(); return l.b.String() }
-
 var (
 	csrfRE = regexp.MustCompile(`name="csrf" value="([^"]+)"`)
-	codeRE = regexp.MustCompile(`Setup code: ([A-Z0-9]{5}(?:-[A-Z0-9]{5}){3})`)
+	codeRE = regexp.MustCompile(`Setup code: (\S+)`)
 )
 
 // Starts the real server on a free local port, completes first-run setup with the code from the log,
@@ -313,19 +299,12 @@ func TestWebUISetupLoginAddInstancesRunNowAndSeeActivity(t *testing.T) {
 	for _, kind := range apps.Kinds {
 		instance(t, kind) // skips unless the apps are running
 	}
-	logs := &logBuf{}
-	old := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(logs, nil)))
-	defer slog.SetDefault(old)
-
-	dir := t.TempDir()
-	l, _ := net.Listen("tcp", "127.0.0.1:0")
-	port := l.Addr().(*net.TCPAddr).Port
-	l.Close()
+	logs := tu.CaptureLogs(t)
+	dir, port := t.TempDir(), tu.FreePort(t)
 	cfg := filepath.Join(dir, "config", "config.toml")
 	os.MkdirAll(filepath.Dir(cfg), 0o755)
 	os.MkdirAll(filepath.Join(dir, "state"), 0o755)
-	os.WriteFile(cfg, []byte(fmt.Sprintf("state_dir = %q\n[web]\nlisten = \"127.0.0.1\"\nport = %d\n", filepath.Join(dir, "state"), port)), 0o644)
+	os.WriteFile(cfg, fmt.Appendf(nil, "state_dir = %q\n[web]\nlisten = \"127.0.0.1\"\nport = %d\n", filepath.Join(dir, "state"), port), 0o644)
 	settings, err := config.Load(cfg, config.Environ{}, true)
 	if err != nil {
 		t.Fatal(err)
@@ -338,7 +317,7 @@ func TestWebUISetupLoginAddInstancesRunNowAndSeeActivity(t *testing.T) {
 		}
 		return withoutNoIndexerHealth{p.(*client.Client)}, nil
 	}, nil)
-	if err := web.Announce(settings); err != nil {
+	if err := web.Announce(settings, logs); err != nil {
 		t.Fatal(err)
 	}
 	m := codeRE.FindStringSubmatch(logs.String()) // what the operator reads in the container log
@@ -363,18 +342,10 @@ func TestWebUISetupLoginAddInstancesRunNowAndSeeActivity(t *testing.T) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	get := func(path string) (int, string, string) {
-		resp, err := browser.Get(base + path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer resp.Body.Close()
-		body, _ := io.ReadAll(resp.Body)
-		return resp.StatusCode, resp.Header.Get("Location"), string(body)
-	}
-	post := func(path string, f url.Values) (int, string, string) {
-		req, _ := newPost(base+path, f)
+	do := func(method, path string, f url.Values) (int, string, string) {
+		req, _ := http.NewRequest(method, base+path, strings.NewReader(f.Encode()))
 		req.Header.Set("Origin", base)
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		resp, err := browser.Do(req)
 		if err != nil {
 			t.Fatal(err)
@@ -383,6 +354,8 @@ func TestWebUISetupLoginAddInstancesRunNowAndSeeActivity(t *testing.T) {
 		body, _ := io.ReadAll(resp.Body)
 		return resp.StatusCode, resp.Header.Get("Location"), string(body)
 	}
+	get := func(path string) (int, string, string) { return do(http.MethodGet, path, nil) }
+	post := func(path string, f url.Values) (int, string, string) { return do(http.MethodPost, path, f) }
 	csrf := func(html string) string {
 		m := csrfRE.FindStringSubmatch(html)
 		if m == nil {
@@ -474,12 +447,4 @@ func TestWebUISetupLoginAddInstancesRunNowAndSeeActivity(t *testing.T) {
 			t.Fatal("a key leaked into a page or the log")
 		}
 	}
-}
-
-func newPost(target string, f url.Values) (*http.Request, error) {
-	req, err := http.NewRequest("POST", target, strings.NewReader(f.Encode()))
-	if err == nil {
-		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	}
-	return req, err
 }

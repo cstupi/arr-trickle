@@ -76,7 +76,7 @@ func (l *Log) Record(instance string, s runner.Search, now time.Time) {
 	defer l.mu.Unlock()
 	if info, err := os.Stat(l.path); err == nil && info.Size()+int64(len(line))+1 > l.maxBytes {
 		if err := os.Rename(l.path, l.rotated); err != nil {
-			slog.Warn(fmt.Sprintf("could not rotate the activity log %s: %s", l.path, err))
+			slog.Warn("could not rotate the activity log", "path", l.path, "err", err)
 		}
 	}
 	f, err := os.OpenFile(l.path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644)
@@ -87,7 +87,7 @@ func (l *Log) Record(instance string, s runner.Search, now time.Time) {
 		}
 	}
 	if err != nil {
-		slog.Warn(fmt.Sprintf("could not write the activity log %s: %s", l.path, err))
+		slog.Warn("could not write the activity log", "path", l.path, "err", err)
 	}
 }
 

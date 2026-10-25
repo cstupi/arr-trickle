@@ -49,15 +49,13 @@ func TestBudgetIsSafeUnderConcurrentUse(t *testing.T) {
 	b := NewBudget(path)
 	var wg sync.WaitGroup
 	for range 8 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for range 200 {
 				if err := b.Add("x", 1); err != nil {
 					t.Error(err)
 				}
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	if b.Used("x") != 1600 || NewBudget(path).Used("x") != 1600 {
@@ -78,23 +76,23 @@ func TestHeartbeat(t *testing.T) {
 	if _, ok := HeartbeatAge(hb); ok {
 		t.Fatal("garbage is no heartbeat")
 	}
-	os.WriteFile(hb, []byte(strconv.FormatInt(time.Now().Add(-time.Hour).Unix(), 10)), 0o644)
+	os.WriteFile(hb, strconv.AppendInt(nil, time.Now().Add(-time.Hour).Unix(), 10), 0o644)
 	if age, _ := HeartbeatAge(hb); age < 59*time.Minute {
 		t.Fatal(age)
 	}
 }
 
-func TestPausedFlag(t *testing.T) {
-	p := Paused{filepath.Join(t.TempDir(), "paused")}
-	if p.Get() {
+func TestFlag(t *testing.T) {
+	p := Flag(filepath.Join(t.TempDir(), "paused"))
+	if p.IsSet() {
 		t.Fatal("not paused by default")
 	}
 	p.Set(true)
-	if !p.Get() {
+	if !p.IsSet() {
 		t.Fatal("paused")
 	}
 	p.Set(false)
-	if p.Get() || p.Set(false) != nil {
+	if p.IsSet() || p.Set(false) != nil {
 		t.Fatal("resumed, and resuming twice is fine")
 	}
 }

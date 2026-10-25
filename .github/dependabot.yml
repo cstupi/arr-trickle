@@ -12,3 +12,7 @@ updates:
     directory: /
     schedule:
       interval: weekly
+  - package-ecosystem: gomod  # staticcheck and govulncheck, run with `go tool -modfile=tools/go.mod`
+    directory: /tools
+    schedule:
+      interval: weekly

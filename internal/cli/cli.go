@@ -8,11 +8,10 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -40,35 +39,10 @@ options:
   --version        print the version
 `
 
-// Level is the log level, changed on hot reload.
-var Level = new(slog.LevelVar)
+var level = new(slog.LevelVar)
 
-// lineHandler writes "2006-01-02 15:04:05 LEVEL message", like the 0.2 log format.
-type lineHandler struct {
-	mu *sync.Mutex
-	w  io.Writer
-}
-
-func (h lineHandler) Enabled(_ context.Context, l slog.Level) bool { return l >= Level.Level() }
-func (h lineHandler) WithAttrs([]slog.Attr) slog.Handler           { return h }
-func (h lineHandler) WithGroup(string) slog.Handler                { return h }
-func (h lineHandler) Handle(_ context.Context, r slog.Record) error {
-	name := map[slog.Level]string{slog.LevelDebug: "DEBUG", slog.LevelInfo: "INFO", slog.LevelWarn: "WARNING", slog.LevelError: "ERROR"}[r.Level]
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	_, err := fmt.Fprintf(h.w, "%s %s %s\n", r.Time.Format("2006-01-02 15:04:05"), name, r.Message)
-	return err
-}
-
-// SetLevel applies a configured log level name.
-func SetLevel(name string) {
-	Level.Set(map[string]slog.Level{"DEBUG": slog.LevelDebug, "INFO": slog.LevelInfo, "WARNING": slog.LevelWarn, "ERROR": slog.LevelError}[name])
-}
-
-// SetupLogging sends logs to w.
-func SetupLogging(w io.Writer, level string) {
-	SetLevel(level)
-	slog.SetDefault(slog.New(lineHandler{&sync.Mutex{}, w}))
+func setLevel(name string) {
+	level.Set(map[string]slog.Level{"DEBUG": slog.LevelDebug, "INFO": slog.LevelInfo, "WARNING": slog.LevelWarn, "ERROR": slog.LevelError}[name])
 }
 
 // Main runs the command line and returns the exit code.
@@ -114,7 +88,8 @@ func Main(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "configuration error: %s\n", err)
 		return 2
 	}
-	SetupLogging(stdout, settings.LogLevel)
+	setLevel(settings.LogLevel)
+	slog.SetDefault(slog.New(slog.NewTextHandler(stdout, &slog.HandlerOptions{Level: level})))
 	switch command {
 	case "validate":
 		return cmdValidate(settings, stdout, stderr)
@@ -157,7 +132,7 @@ func cmdCheck(s config.Settings, stdout io.Writer) int {
 }
 
 func cmdHealthcheck(s config.Settings, stdout io.Writer) int {
-	age, ok := state.HeartbeatAge(s.StateDir + "/heartbeat")
+	age, ok := state.HeartbeatAge(filepath.Join(s.StateDir, "heartbeat"))
 	limit := time.Duration(s.IntervalMinutes)*2*time.Minute + 5*time.Minute
 	if !ok || age > limit {
 		last := "never"
@@ -195,20 +170,12 @@ func cmdRun(s config.Settings, once bool, path string, stdout io.Writer) int {
 	for _, i := range s.Instances {
 		names = append(names, fmt.Sprintf("%s(%s)", i.Name, i.Kind))
 	}
-	shown := strings.Join(names, ", ")
-	if shown == "" {
-		shown = "no instances yet"
-	}
-	dry := ""
-	if s.DryRun {
-		dry = " [dry run]"
-	}
-	slog.Info(fmt.Sprintf("arr-trickle %s: %s every %d min%s", version.Version, shown, s.IntervalMinutes, dry))
+	slog.Info("arr-trickle "+version.Version, "instances", strings.Join(names, ", "), "interval_minutes", s.IntervalMinutes, "dry_run", s.DryRun)
 	if err := os.MkdirAll(s.StateDir, 0o755); err != nil {
-		slog.Error(fmt.Sprintf("cannot create the state directory %s: %s", s.StateDir, err))
+		slog.Error("cannot create the state directory", "path", s.StateDir, "err", err)
 		return 1
 	}
-	sched := service.New(s, nil, func(n config.Settings) { SetLevel(n.LogLevel) })
+	sched := service.New(s, nil, func(n config.Settings) { setLevel(n.LogLevel) })
 	if once {
 		for _, r := range sched.RunPass() {
 			if !r.OK() {
@@ -217,35 +184,33 @@ func cmdRun(s config.Settings, once bool, path string, stdout io.Writer) int {
 		}
 		return 0
 	}
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	defer sched.Stop(10 * time.Second)
 	if !s.Web.Enabled {
 		sched.Start()
-		<-stop
-		sched.Stop(10 * time.Second)
+		<-ctx.Done()
 		return 0
 	}
-	if err := web.Announce(s); err != nil {
-		slog.Error(fmt.Sprintf("cannot write the setup code: %s", err))
+	if err := web.Announce(s, stdout); err != nil {
+		slog.Error("cannot write the setup code", "err", err)
 		return 1
 	}
 	srv := web.New(s, sched, path).HTTPServer(s.Web.ListenAddr())
 	sched.Start()
 	errc := make(chan error, 1)
 	go func() { errc <- srv.ListenAndServe() }()
-	slog.Info("web UI listening on " + s.Web.ListenAddr())
-	code := 0
+	slog.Info("web UI listening", "addr", s.Web.ListenAddr())
 	select {
-	case <-stop:
+	case <-ctx.Done():
 	case err := <-errc:
-		slog.Error(fmt.Sprintf("web UI stopped: %s", err))
-		code = 1
+		slog.Error("web UI stopped", "err", err)
+		return 1
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := srv.Shutdown(ctx); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		slog.Warn(fmt.Sprintf("web UI shutdown: %s", err))
+	if err := srv.Shutdown(shutdown); err != nil {
+		slog.Warn("web UI shutdown", "err", err)
 	}
-	sched.Stop(10 * time.Second)
-	return code
+	return 0
 }

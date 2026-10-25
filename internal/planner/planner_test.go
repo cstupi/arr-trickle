@@ -41,7 +41,7 @@ func TestRadarrUsesIsAvailable(t *testing.T) {
 
 func TestExcludeByOwner(t *testing.T) {
 	recs := []apps.Record{tu.Episode(1, 1, 134, tu.Past, 1), tu.Episode(2, 1, 20, tu.Past, 1)}
-	eq(t, ids(Select("sonarr", recs, 5, tu.Now, Options{Exclude: map[int]bool{134: true}})), []int{2})
+	eq(t, ids(Select("sonarr", recs, 5, tu.Now, Options{Exclude: []int{134}})), []int{2})
 	if id, _ := apps.OwnerID("radarr", tu.M(7)); id != 7 {
 		t.Fatal("radarr owner is the movie")
 	}

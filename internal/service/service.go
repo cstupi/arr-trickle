@@ -3,9 +3,10 @@
 package service
 
 import (
-	"fmt"
 	"log/slog"
+	"maps"
 	"path/filepath"
+	"slices"
 	"sync"
 	"time"
 
@@ -29,8 +30,7 @@ type InstanceStatus struct {
 
 // Snapshot is the scheduler's state at one moment.
 type Snapshot struct {
-	Paused          bool
-	DryRun          bool
+	Paused, DryRun  bool
 	Running         bool // a pass is in progress
 	IntervalMinutes int
 	LastPass        time.Time
@@ -47,7 +47,7 @@ type stamped struct {
 type Scheduler struct {
 	Budget    *state.Budget
 	Activity  *activity.Log
-	paused    state.Paused
+	paused    state.Flag
 	heartbeat string
 	factory   ClientFactory
 	onReload  func(config.Settings)
@@ -56,11 +56,9 @@ type Scheduler struct {
 	settings  config.Settings
 	requested bool
 	running   bool
-	lastTick  time.Time // when the schedule last fired; zero = never
+	lastTick  time.Time // when the schedule last fired; zero = never, so the first pass runs at startup
 	lastPass  time.Time
 	reports   map[string]stamped
-	passes    int
-	passDone  *sync.Cond
 
 	passMu sync.Mutex // one pass at a time
 	wake   chan struct{}
@@ -73,10 +71,13 @@ func New(s config.Settings, factory ClientFactory, onReload func(config.Settings
 	if factory == nil {
 		factory = runner.MakeClient
 	}
-	sc := &Scheduler{
+	if onReload == nil {
+		onReload = func(config.Settings) {}
+	}
+	return &Scheduler{
 		Budget:    state.NewBudget(filepath.Join(s.StateDir, "budget.json")),
 		Activity:  activity.New(filepath.Join(s.StateDir, "activity.jsonl"), activity.MaxBytes),
-		paused:    state.Paused{Path: filepath.Join(s.StateDir, "paused")},
+		paused:    state.Flag(filepath.Join(s.StateDir, "paused")),
 		heartbeat: filepath.Join(s.StateDir, "heartbeat"),
 		factory:   factory,
 		onReload:  onReload,
@@ -86,8 +87,6 @@ func New(s config.Settings, factory ClientFactory, onReload func(config.Settings
 		stop:      make(chan struct{}),
 		done:      make(chan struct{}),
 	}
-	sc.passDone = sync.NewCond(&sc.mu)
-	return sc
 }
 
 func (s *Scheduler) poke() {
@@ -108,19 +107,11 @@ func (s *Scheduler) Settings() config.Settings {
 func (s *Scheduler) UpdateSettings(n config.Settings) {
 	s.mu.Lock()
 	s.settings = n
-	names := map[string]bool{}
-	for _, i := range n.Instances {
-		names[i.Name] = true
-	}
-	for name := range s.reports {
-		if !names[name] {
-			delete(s.reports, name)
-		}
-	}
+	maps.DeleteFunc(s.reports, func(name string, _ stamped) bool {
+		return !slices.ContainsFunc(n.Instances, func(i config.Instance) bool { return i.Name == name })
+	})
 	s.mu.Unlock()
-	if s.onReload != nil {
-		s.onReload(n)
-	}
+	s.onReload(n)
 	s.poke() // recompute the next pass time for a changed interval
 }
 
@@ -133,59 +124,52 @@ func (s *Scheduler) RunNow() {
 }
 
 // Paused reports whether scheduled passes are paused.
-func (s *Scheduler) Paused() bool { return s.paused.Get() }
+func (s *Scheduler) Paused() bool { return s.paused.IsSet() }
 
 // Pause stops scheduled passes (persisted across restarts). Run now still works.
-func (s *Scheduler) Pause() error {
-	if err := s.paused.Set(true); err != nil {
-		return err
-	}
-	slog.Info("scheduled passes paused")
-	return nil
-}
+func (s *Scheduler) Pause() error { return s.setPaused(true) }
 
 // Resume restarts scheduled passes.
-func (s *Scheduler) Resume() error {
-	if err := s.paused.Set(false); err != nil {
+func (s *Scheduler) Resume() error { return s.setPaused(false) }
+
+func (s *Scheduler) setPaused(on bool) error {
+	if err := s.paused.Set(on); err != nil {
 		return err
 	}
-	slog.Info("scheduled passes resumed")
+	slog.Info("scheduled passes", "paused", on)
 	s.poke()
 	return nil
 }
 
 // Check runs the read-only probe for the named instance.
 func (s *Scheduler) Check(name string) runner.CheckResult {
-	for _, inst := range s.Settings().Instances {
-		if inst.Name == name {
-			c, err := s.factory(inst)
-			if err != nil {
-				return runner.Fail(name, err.Error())
-			}
-			return runner.CheckInstance(inst, c)
-		}
+	i := slices.IndexFunc(s.Settings().Instances, func(i config.Instance) bool { return i.Name == name })
+	if i < 0 {
+		return runner.Fail(name, "no such instance")
 	}
-	return runner.Fail(name, "no such instance")
+	inst := s.Settings().Instances[i]
+	c, err := s.factory(inst)
+	if err != nil {
+		return runner.Fail(name, err.Error())
+	}
+	return runner.CheckInstance(inst, c)
 }
 
 // RunPass does one pass over every instance now.
 func (s *Scheduler) RunPass() []*runner.Report {
 	s.passMu.Lock()
 	defer s.passMu.Unlock()
-	settings := s.Settings()
 	s.mu.Lock()
+	settings := s.settings
 	s.running = true
 	s.mu.Unlock()
-	reports := make([]*runner.Report, 0, len(settings.Instances))
 	defer func() {
 		s.mu.Lock()
-		s.running = false
-		s.lastPass = time.Now()
-		s.passes++
-		s.passDone.Broadcast()
+		s.running, s.lastPass = false, time.Now()
 		s.mu.Unlock()
 		s.beat()
 	}()
+	reports := make([]*runner.Report, 0, len(settings.Instances))
 	for _, inst := range settings.Instances {
 		reports = append(reports, s.runOne(inst, settings.DryRun))
 	}
@@ -194,16 +178,15 @@ func (s *Scheduler) RunPass() []*runner.Report {
 
 func (s *Scheduler) beat() {
 	if err := state.Beat(s.heartbeat); err != nil {
-		slog.Warn(fmt.Sprintf("could not write the heartbeat: %s", err))
+		slog.Warn("could not write the heartbeat", "err", err)
 	}
 }
 
 func (s *Scheduler) runOne(inst config.Instance, dryRun bool) *runner.Report {
-	var r *runner.Report
-	c, err := s.factory(inst)
-	if err != nil {
-		slog.Warn(fmt.Sprintf("%s: run failed: %s", inst.Name, err))
-		r = &runner.Report{Name: inst.Name, Kind: inst.Kind, Error: err.Error()}
+	r := &runner.Report{Name: inst.Name, Kind: inst.Kind}
+	if c, err := s.factory(inst); err != nil {
+		slog.Warn("run failed", "instance", inst.Name, "err", err)
+		r.Error = err.Error()
 	} else {
 		r = runner.RunInstance(inst, c, s.Budget, dryRun, time.Time{})
 	}
@@ -216,27 +199,7 @@ func (s *Scheduler) runOne(inst config.Instance, dryRun bool) *runner.Report {
 	return r
 }
 
-// WaitForPasses blocks until at least count passes have finished, or timeout (used by tests).
-func (s *Scheduler) WaitForPasses(count int, timeout time.Duration) bool {
-	deadline := time.Now().Add(timeout)
-	timer := time.AfterFunc(timeout, func() {
-		s.mu.Lock()
-		s.passDone.Broadcast()
-		s.mu.Unlock()
-	})
-	defer timer.Stop()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for s.passes < count {
-		if !time.Now().Before(deadline) {
-			return false
-		}
-		s.passDone.Wait()
-	}
-	return true
-}
-
-// nextTick is when the schedule fires next. Never fired: the zero time, i.e. due now.
+// nextTick is when the schedule fires next (the zero time if it never has: due now).
 func (s *Scheduler) nextTick() time.Time {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -249,8 +212,7 @@ func (s *Scheduler) nextTick() time.Time {
 func (s *Scheduler) loop() {
 	defer close(s.done)
 	for {
-		wait := time.Until(s.nextTick())
-		timer := time.NewTimer(max(wait, 0))
+		timer := time.NewTimer(max(time.Until(s.nextTick()), 0))
 		select {
 		case <-s.stop:
 			timer.Stop()
@@ -259,17 +221,14 @@ func (s *Scheduler) loop() {
 		case <-timer.C:
 		}
 		timer.Stop()
-		now := time.Now()
+		now, next := time.Now(), s.nextTick()
 		s.mu.Lock()
-		requested := s.requested
+		requested, due := s.requested, !now.Before(next)
 		s.requested = false
-		s.mu.Unlock()
-		due := !now.Before(s.nextTick())
 		if due {
-			s.mu.Lock()
 			s.lastTick = now
-			s.mu.Unlock()
 		}
+		s.mu.Unlock()
 		switch {
 		case requested || (due && !s.Paused()):
 			s.safePass()
@@ -282,7 +241,7 @@ func (s *Scheduler) loop() {
 func (s *Scheduler) safePass() {
 	defer func() { // keep the scheduler alive whatever happens in one pass
 		if p := recover(); p != nil {
-			slog.Error(fmt.Sprintf("pass failed unexpectedly: %v", p))
+			slog.Error("pass failed unexpectedly", "panic", p)
 		}
 	}()
 	s.RunPass()
@@ -290,9 +249,6 @@ func (s *Scheduler) safePass() {
 
 // Start runs the loop in a background goroutine.
 func (s *Scheduler) Start() { go s.loop() }
-
-// Serve runs the loop in the calling goroutine until Stop (no web UI).
-func (s *Scheduler) Serve() { s.loop() }
 
 // Stop ends the loop and waits for it (up to timeout).
 func (s *Scheduler) Stop(timeout time.Duration) {
@@ -305,30 +261,20 @@ func (s *Scheduler) Stop(timeout time.Duration) {
 
 // Snapshot is a consistent copy of the scheduler's status.
 func (s *Scheduler) Snapshot() Snapshot {
-	paused := s.Paused()
-	next := s.nextTick()
+	paused, next := s.Paused(), s.nextTick()
 	s.mu.Lock()
-	settings, running, lastPass := s.settings, s.running, s.lastPass
-	reports := make(map[string]stamped, len(s.reports))
-	for k, v := range s.reports {
-		reports[k] = v
-	}
+	settings, reports := s.settings, maps.Clone(s.reports)
+	snap := Snapshot{Paused: paused, DryRun: settings.DryRun, Running: s.running, IntervalMinutes: settings.IntervalMinutes, LastPass: s.lastPass}
 	s.mu.Unlock()
-	snap := Snapshot{
-		Paused: paused, DryRun: settings.DryRun, Running: running,
-		IntervalMinutes: settings.IntervalMinutes, LastPass: lastPass,
-	}
 	if !paused {
-		snap.NextPass = next
-		if now := time.Now(); next.Before(now) {
-			snap.NextPass = now
+		snap.NextPass = time.Now()
+		if next.After(snap.NextPass) {
+			snap.NextPass = next
 		}
 	}
 	for _, i := range settings.Instances {
 		st := InstanceStatus{Name: i.Name, Kind: i.Kind, URL: i.URL, BudgetUsed: s.Budget.Used(i.Name), BudgetCap: i.DailyCap}
-		if r, ok := reports[i.Name]; ok {
-			st.LastPass, st.Report = r.at, r.report
-		}
+		st.LastPass, st.Report = reports[i.Name].at, reports[i.Name].report
 		snap.Instances = append(snap.Instances, st)
 	}
 	return snap
