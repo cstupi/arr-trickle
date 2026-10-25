@@ -91,7 +91,6 @@ form.stack { display: grid; gap: 1rem; max-width: 40rem; }
 input, select { font: inherit; width: 100%; height: 2.6rem; padding: .5rem .7rem; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--text); }
 input[type="checkbox"] { width: auto; height: auto; accent-color: var(--accent); }
 .row select { width: auto; }
-label.check { display: flex; gap: .6rem; align-items: center; }
 fieldset { border: 1px solid var(--line); border-radius: var(--radius); padding: 1rem; margin: 0; display: grid; gap: 1rem; }
 legend { font-weight: 600; padding: 0 .35rem; }
 .field .error, .field-error { font-size: .85rem; }

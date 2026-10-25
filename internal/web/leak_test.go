@@ -76,7 +76,6 @@ timeout_seconds = 5
 	for _, name := range []string{"from-xml", "from-file", "from-env", "down"} {
 		post("/control/check", form("name", name))
 	}
-	post("/control/dry-run", nil)
 	post("/control/run-now", nil)
 	post("/settings", form("interval_minutes", "junk", "log_level", "junk"))
 	f := form("kind", "radarr", "url", "http://r:1", "key_source", "api_key_env", "key_ref", "ARR_TEST_KEY")

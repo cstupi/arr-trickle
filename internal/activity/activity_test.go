@@ -13,20 +13,20 @@ import (
 	tu "github.com/cstupi/arr-trickle/internal/testutil"
 )
 
-func search(n int, command string, dry bool) runner.Search {
+func search(n int, command string) runner.Search {
 	items := make([]string, n)
 	for i := range items {
 		items[i] = fmt.Sprintf("item %d", i)
 	}
-	return runner.Search{Wanted: "missing", Command: command, Items: items, Cost: n, DryRun: dry}
+	return runner.Search{Wanted: "missing", Command: command, Items: items, Cost: n}
 }
 
 func TestRecordsAndReadsNewestFirst(t *testing.T) {
 	l := New(filepath.Join(t.TempDir(), "activity.jsonl"), MaxBytes)
-	l.Record("lidarr", search(2, "AlbumSearch", false), tu.Now)
-	l.Record("radarr", search(1, "MoviesSearch", true), tu.Now.Add(time.Minute))
+	l.Record("lidarr", search(2, "AlbumSearch"), tu.Now)
+	l.Record("radarr", search(1, "MoviesSearch"), tu.Now.Add(time.Minute))
 	entries := l.Entries("")
-	want := Entry{"2026-10-24T00:01:00+00:00", "radarr", "missing", "MoviesSearch", []string{"item 0"}, 1, true}
+	want := Entry{"2026-10-24T00:01:00+00:00", "radarr", "missing", "MoviesSearch", []string{"item 0"}, 1}
 	if len(entries) != 2 || entries[1].Instance != "lidarr" || !reflect.DeepEqual(entries[0], want) {
 		t.Fatal(entries)
 	}
@@ -39,7 +39,7 @@ func TestRotatesAndStaysBounded(t *testing.T) {
 	dir := t.TempDir()
 	l := New(filepath.Join(dir, "activity.jsonl"), 1000)
 	for i := range 100 {
-		l.Record(fmt.Sprintf("inst%d", i), search(1, "AlbumSearch", false), tu.Now)
+		l.Record(fmt.Sprintf("inst%d", i), search(1, "AlbumSearch"), tu.Now)
 	}
 	for _, name := range []string{"activity.jsonl", "activity.jsonl.1"} {
 		if info, err := os.Stat(filepath.Join(dir, name)); err != nil || info.Size() > 1000 {
@@ -72,7 +72,7 @@ func TestIgnoresCorruptLines(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "a.jsonl")
 	os.WriteFile(path, []byte("not json\n{\"time\": 1}\n{\"x\": 1}\n"), 0o644)
 	l := New(path, MaxBytes)
-	l.Record("ok", search(1, "AlbumSearch", false), time.Time{})
+	l.Record("ok", search(1, "AlbumSearch"), time.Time{})
 	if e := l.Entries(""); len(e) != 1 || e[0].Instance != "ok" {
 		t.Fatal(e)
 	}
@@ -81,8 +81,20 @@ func TestIgnoresCorruptLines(t *testing.T) {
 func TestWriteFailureIsLoggedNotRaised(t *testing.T) {
 	logs := tu.CaptureLogs(t)
 	l := New(filepath.Join(t.TempDir(), "missing-dir", "a.jsonl"), MaxBytes)
-	l.Record("x", search(1, "AlbumSearch", false), tu.Now)
+	l.Record("x", search(1, "AlbumSearch"), tu.Now)
 	if !strings.Contains(logs.String(), "could not write the activity log") || len(l.Entries("")) != 0 {
 		t.Fatal(logs.String())
+	}
+}
+
+func TestReadsEntriesWrittenBy030(t *testing.T) {
+	// 0.3.0 logged a dry_run field; such lines must still be shown after the upgrade.
+	path := filepath.Join(t.TempDir(), "activity.jsonl")
+	line := `{"time":"2026-10-24T00:00:00+00:00","instance":"lidarr","kind":"missing","command":"AlbumSearch","items":["a"],"cost":1,"dry_run":false}`
+	if err := os.WriteFile(path, []byte(line+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if e := New(path, MaxBytes).Entries(""); len(e) != 1 || e[0].Command != "AlbumSearch" || e[0].Cost != 1 {
+		t.Fatal(e)
 	}
 }

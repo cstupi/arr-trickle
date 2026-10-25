@@ -9,17 +9,12 @@
     <form method="post" action="/control/{{if .Snap.Paused}}resume{{else}}pause{{end}}" class="inline">
       <input type="hidden" name="csrf" value="{{.CSRF}}"><button type="submit" class="secondary">{{if .Snap.Paused}}Resume{{else}}Pause{{end}}</button>
     </form>
-    <form method="post" action="/control/dry-run" class="inline">
-      <input type="hidden" name="csrf" value="{{.CSRF}}">
-      <button type="submit" class="secondary">{{if .Snap.DryRun}}Turn dry run off{{else}}Turn dry run on{{end}}</button>
-    </form>
   </div>
 </div>
 
 <section class="tiles">
   <div class="tile"><span class="label">Status</span>
-    <span class="value">{{if .Snap.Running}}<span class="badge ok">Pass running</span>{{else if .Snap.Paused}}<span class="badge warn">Paused</span>{{else}}<span class="badge ok">Active</span>{{end}}
-    {{if .Snap.DryRun}}<span class="badge warn">Dry run</span>{{end}}</span></div>
+    <span class="value">{{if .Snap.Running}}<span class="badge ok">Pass running</span>{{else if .Snap.Paused}}<span class="badge warn">Paused</span>{{else}}<span class="badge ok">Active</span>{{end}}</span></div>
   <div class="tile"><span class="label">Last pass</span><span class="value">{{when .Snap.LastPass}}</span></div>
   <div class="tile"><span class="label">Next pass</span><span class="value">{{if .Snap.Paused}}paused{{else}}{{when .Snap.NextPass}}{{end}}</span></div>
   <div class="tile"><span class="label">Interval</span><span class="value">every {{.Snap.IntervalMinutes}} min</span></div>
@@ -53,7 +48,7 @@
         {{if .Error}}<span class="error">{{.Error}}</span>
         {{else if .Health}}<span class="warn">{{join .Health "; "}}</span>
         {{else if .Skipped}}Skipped: {{.Skipped}}
-        {{else}}{{len .Searches}} search(es){{if and .Searches (index .Searches 0).DryRun}} (dry run){{end}} in the last pass{{end}}
+        {{else}}{{len .Searches}} search(es) in the last pass{{end}}
       {{else}}<span class="muted">Waiting for the first pass.</span>{{end}}
       <br><small>Last pass: {{when .LastPass}}</small>
     </p>

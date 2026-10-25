@@ -22,7 +22,7 @@
   <tr>
     <td class="nowrap">{{activityTime .Time}}</td>
     <td>{{.Instance}}</td>
-    <td class="nowrap">{{.Command}}<br><small>{{.Kind}}</small>{{if .DryRun}} <span class="badge warn">dry run</span>{{end}}</td>
+    <td class="nowrap">{{.Command}}<br><small>{{.Kind}}</small></td>
     <td>{{join .Items "; "}}</td>
     <td data-label="Cost">{{.Cost}}</td>
   </tr>

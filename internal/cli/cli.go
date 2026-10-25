@@ -170,7 +170,7 @@ func cmdRun(s config.Settings, once bool, path string, stdout io.Writer) int {
 	for _, i := range s.Instances {
 		names = append(names, fmt.Sprintf("%s(%s)", i.Name, i.Kind))
 	}
-	slog.Info("arr-trickle "+version.Version, "instances", strings.Join(names, ", "), "interval_minutes", s.IntervalMinutes, "dry_run", s.DryRun)
+	slog.Info("arr-trickle "+version.Version, "instances", strings.Join(names, ", "), "interval_minutes", s.IntervalMinutes)
 	if err := os.MkdirAll(s.StateDir, 0o755); err != nil {
 		slog.Error("cannot create the state directory", "path", s.StateDir, "err", err)
 		return 1

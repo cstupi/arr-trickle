@@ -39,9 +39,15 @@ var (
 	XMLKeyRE = regexp.MustCompile(`<ApiKey>\s*([^<\s]+)\s*</ApiKey>`)
 
 	// The settings each table accepts, in the order the writer emits them.
-	topKeys      = []string{"interval_minutes", "state_dir", "dry_run", "log_level", "allow_insecure_http"}
+	topKeys      = []string{"interval_minutes", "state_dir", "log_level"}
 	webKeys      = []string{"enabled", "listen", "port", "cookie_secure", "session_hours", "allowed_networks", "trusted_proxies"}
 	instanceKeys = []string{"name", "url", "api_key_from", "api_key_file", "api_key_env", "missing", "cutoff", "daily_cap", "max_queue", "exclude", "timeout_seconds"}
+
+	// removedKeys were accepted by earlier versions; naming them beats a bare "unknown setting".
+	removedKeys = map[string]string{
+		"dry_run":             "dry_run was removed in 0.3.1; every pass sends its searches",
+		"allow_insecure_http": "allow_insecure_http was removed in 0.3.1; use https for apps on public hosts",
+	}
 
 	// LogLevels are the accepted log_level values.
 	LogLevels = []string{"DEBUG", "INFO", "WARNING", "ERROR"}
@@ -116,7 +122,7 @@ func (c *collector) str(where string, v any) string {
 	return s
 }
 
-func (c *collector) url(where string, v any, allowInsecureHTTP bool) string {
+func (c *collector) url(where string, v any) string {
 	s := strings.TrimRight(c.str(where, v), "/")
 	if s == "" {
 		return ""
@@ -127,9 +133,10 @@ func (c *collector) url(where string, v any, allowInsecureHTTP bool) string {
 		c.add(where, "%s must be an http:// or https:// URL", where)
 	case u.User != nil || strings.ContainsAny(s, "?#"):
 		c.add(where, "%s must not contain credentials, a query or a fragment", where)
-	case u.Scheme == "http" && !allowInsecureHTTP && !isPrivateHost(u.Hostname()):
-		c.add(where, "%s: refusing to send an API key over plain http to public host '%s'; "+
-			"use https or set allow_insecure_http = true", where, u.Hostname())
+	case u.Scheme == "http" && !isPrivateHost(u.Hostname()):
+		// Never configurable: the API key would cross the internet in clear text.
+		c.add(where, "%s: refusing to send an API key over plain http to public host '%s'; use https",
+			where, u.Hostname())
 	default:
 		return s
 	}
@@ -234,13 +241,11 @@ func (w Web) ListenAddr() string { return net.JoinHostPort(w.Listen, strconv.Ito
 
 // Settings is a whole validated configuration.
 type Settings struct {
-	Instances         []Instance
-	IntervalMinutes   int
-	StateDir          string
-	DryRun            bool
-	LogLevel          string
-	AllowInsecureHTTP bool
-	Web               Web
+	Instances       []Instance
+	IntervalMinutes int
+	StateDir        string
+	LogLevel        string
+	Web             Web
 }
 
 // unknown lists the keys of m that are not allowed, sorted and comma-separated.
@@ -305,7 +310,7 @@ func get(m map[string]any, key string, def any) any {
 	return def
 }
 
-func parseInstance(kind string, index int, raw any, allowInsecureHTTP bool) (Instance, error) {
+func parseInstance(kind string, index int, raw any) (Instance, error) {
 	where := fmt.Sprintf("%s[%d]", kind, index)
 	m, ok := raw.(map[string]any)
 	if !ok {
@@ -323,7 +328,7 @@ func parseInstance(kind string, index int, raw any, allowInsecureHTTP bool) (Ins
 	inst := Instance{
 		Kind:           kind,
 		Name:           c.str(at("name"), get(m, "name", defaultName)),
-		URL:            c.url(at("url"), m["url"], allowInsecureHTTP),
+		URL:            c.url(at("url"), m["url"]),
 		Missing:        c.int(at("missing"), get(m, "missing", int64(5)), 0, 100),
 		Cutoff:         c.int(at("cutoff"), get(m, "cutoff", int64(0)), 0, 100),
 		DailyCap:       c.int(at("daily_cap"), get(m, "daily_cap", int64(0)), 0, 100_000),
@@ -381,16 +386,20 @@ func parseWeb(raw any) (Web, error) {
 // Parse validates settings. allowEmpty permits zero instances (the web UI starts that way, then adds them).
 func Parse(data map[string]any, allowEmpty bool) (Settings, error) {
 	var c collector
-	if u := unknown(data, slices.Concat(topKeys, []string{"web"}, apps.Kinds)...); u != "" {
+	for _, k := range slices.Sorted(maps.Keys(removedKeys)) {
+		if _, ok := data[k]; ok {
+			c.add(k, "%s", removedKeys[k])
+		}
+	}
+	allowed := slices.Concat(topKeys, []string{"web"}, apps.Kinds, slices.Collect(maps.Keys(removedKeys)))
+	if u := unknown(data, allowed...); u != "" {
 		c.add("", "unknown setting(s) %s", u)
 	}
 	s := Settings{
-		Instances:         []Instance{},
-		AllowInsecureHTTP: c.bool("allow_insecure_http", get(data, "allow_insecure_http", false)),
-		IntervalMinutes:   c.int("interval_minutes", get(data, "interval_minutes", int64(60)), 5, 1440),
-		StateDir:          c.str("state_dir", get(data, "state_dir", "/state")),
-		DryRun:            c.bool("dry_run", get(data, "dry_run", false)),
-		LogLevel:          strings.ToUpper(c.str("log_level", get(data, "log_level", "INFO"))),
+		Instances:       []Instance{},
+		IntervalMinutes: c.int("interval_minutes", get(data, "interval_minutes", int64(60)), 5, 1440),
+		StateDir:        c.str("state_dir", get(data, "state_dir", "/state")),
+		LogLevel:        strings.ToUpper(c.str("log_level", get(data, "log_level", "INFO"))),
 	}
 	if s.LogLevel == "" {
 		s.LogLevel = "INFO"
@@ -409,7 +418,7 @@ func Parse(data map[string]any, allowEmpty bool) (Settings, error) {
 		}
 		configured += len(entries)
 		for i, e := range entries {
-			inst, err := parseInstance(kind, i, e, s.AllowInsecureHTTP)
+			inst, err := parseInstance(kind, i, e)
 			c.take(err)
 			if err == nil {
 				s.Instances = append(s.Instances, inst)
@@ -444,14 +453,8 @@ func ToData(s Settings) map[string]any {
 	if s.StateDir != "/state" {
 		data["state_dir"] = s.StateDir
 	}
-	if s.DryRun {
-		data["dry_run"] = true
-	}
 	if s.LogLevel != "INFO" {
 		data["log_level"] = s.LogLevel
-	}
-	if s.AllowInsecureHTTP {
-		data["allow_insecure_http"] = true
 	}
 	if web := webData(s.Web); len(web) > 0 {
 		data["web"] = web
@@ -575,8 +578,8 @@ func FromEnv(env Environ) (map[string]any, error) {
 	if v := env.get("STATE_DIR"); v != "" {
 		data["state_dir"] = v
 	}
-	if v := env.get("DRY_RUN"); v != "" {
-		data["dry_run"] = slices.Contains([]string{"1", "true", "yes"}, strings.ToLower(strings.TrimSpace(v)))
+	if env.get("DRY_RUN") != "" {
+		return nil, Errorf("DRY_RUN", "DRY_RUN was removed in 0.3.1; unset it (every pass sends its searches)")
 	}
 	if v := env.get("LOG_LEVEL"); v != "" {
 		data["log_level"] = v

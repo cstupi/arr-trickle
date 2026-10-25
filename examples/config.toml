@@ -5,10 +5,9 @@
 # (the previous version is kept as config.toml.bak).
 
 interval_minutes = 60        # 5-1440; one pass over every instance per interval
-# dry_run = true             # log what would be searched, send nothing
 # log_level = "INFO"         # DEBUG, INFO, WARNING, ERROR
 # state_dir = "/state"       # daily budget counter and heartbeat
-# allow_insecure_http = false  # plain http is only allowed to private/LAN/container hosts
+# Plain http is accepted only for private/LAN/container hosts; apps on public hosts need https.
 
 # The web UI. Everything here is edited only in this file (the UI shows it read-only); restart after changes.
 # [web]

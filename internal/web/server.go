@@ -79,7 +79,6 @@ var routes = []route{
 	{"POST /control/run-now", (*Server).runNow},
 	{"POST /control/pause", (*Server).pause},
 	{"POST /control/resume", (*Server).resume},
-	{"POST /control/dry-run", (*Server).toggleDryRun},
 	{"POST /control/check", (*Server).check},
 	{"GET /activity", (*Server).activity},
 	{"GET /settings", (*Server).settingsPage},
@@ -521,19 +520,6 @@ func (s *Server) resume(w http.ResponseWriter, r *http.Request) {
 	s.control(w, r, s.scheduler.Resume, "resume", "Scheduled passes resumed.")
 }
 
-func (s *Server) toggleDryRun(w http.ResponseWriter, r *http.Request) {
-	s.editor.Lock()
-	defer s.editor.Unlock()
-	data := config.ToData(s.scheduler.Settings())
-	data["dry_run"] = !s.scheduler.Settings().DryRun
-	n, err := s.editor.save(data)
-	msg := fmt.Sprint(err)
-	if err == nil {
-		msg = "Dry run " + pick(n.DryRun, "on", "off") + "."
-	}
-	s.redirect(w, r, "/", msg)
-}
-
 func (s *Server) check(w http.ResponseWriter, r *http.Request) {
 	if f, ok := s.form(w, r); ok {
 		s.render(w, r, "check.html", http.StatusOK, map[string]any{"Result": s.scheduler.Check(f["name"])})
@@ -581,7 +567,6 @@ func (s *Server) settingsPage(w http.ResponseWriter, r *http.Request) {
 	st := s.scheduler.Settings()
 	s.renderSettings(w, r, http.StatusOK, map[string]any{
 		"interval_minutes": strconv.Itoa(st.IntervalMinutes), "log_level": st.LogLevel,
-		"dry_run": st.DryRun, "allow_insecure_http": st.AllowInsecureHTTP,
 	}, nil, nil)
 }
 
@@ -612,7 +597,6 @@ func (s *Server) settingsSave(w http.ResponseWriter, r *http.Request) {
 		errs, general := splitErrors(err, "")
 		s.renderSettings(w, r, http.StatusBadRequest, map[string]any{
 			"interval_minutes": f["interval_minutes"], "log_level": f["log_level"],
-			"dry_run": f["dry_run"] == "on", "allow_insecure_http": f["allow_insecure_http"] == "on",
 		}, errs, general)
 		return
 	}
