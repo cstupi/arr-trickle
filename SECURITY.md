@@ -101,6 +101,29 @@ Out of scope: an attacker who already controls the host, the Docker daemon or on
 a malicious admin; and anyone with read access to `/state` (it holds the password hash and any keys
 entered in the UI).
 
+## Behind a reverse proxy with TLS
+
+Plain http on a home LAN is the default. For https, put a reverse proxy *on your LAN* in front of
+arr-trickle and tell arr-trickle to trust it:
+
+```toml
+[web]
+cookie_secure = true                 # the session cookie is only sent over https
+trusted_proxies = ["172.20.0.5"]     # the proxy's address as arr-trickle sees it
+allowed_networks = ["192.168.1.0/24", "172.20.0.5/32"]   # your LAN (checked against the real client)
+```
+
+Only addresses in `trusted_proxies` may set `X-Forwarded-For`, `X-Forwarded-Proto` and
+`X-Forwarded-Host`; from anyone else they are ignored. The proxy must pass the original `Host` header,
+because form submissions are checked against it. Caddy does this by default
+(`reverse_proxy arr-trickle:8790`); with nginx add `proxy_set_header Host $host;`,
+`proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;` and
+`proxy_set_header X-Forwarded-Proto $scheme;`. Don't publish arr-trickle's own port when it sits
+behind a proxy, and keep the proxy itself off the internet.
+
+With Docker's userland proxy, clients may appear to come from the Docker gateway (a 172.x address);
+then the `ports:` binding (e.g. `"192.168.1.10:8790:8790"`) and your firewall decide who can connect.
+
 ## Verifying a release image
 
 ```sh
