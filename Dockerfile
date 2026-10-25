@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # Pinned base; Dependabot proposes updates (see .github/dependabot.yml).
-FROM python:3.12.7-alpine3.20
+FROM python:3.13.3-alpine3.20
 
 LABEL org.opencontainers.image.title="arr-trickle" \
       org.opencontainers.image.description="Work through the Sonarr/Radarr/Lidarr backlog a few searches at a time" \
