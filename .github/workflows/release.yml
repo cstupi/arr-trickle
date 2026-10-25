@@ -16,7 +16,7 @@ jobs:
       packages: write
       id-token: write  # keyless cosign signing via GitHub OIDC
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: docker/setup-qemu-action@v3
