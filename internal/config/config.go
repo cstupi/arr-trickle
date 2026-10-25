@@ -191,7 +191,7 @@ func (i Instance) APIKey(env Environ) (string, error) {
 	case i.APIKeyFrom != "":
 		key, err = keyFromArrConfig(i.APIKeyFrom)
 	case i.APIKeyFile != "":
-		key, err = readSecretFile(i.APIKeyFile)
+		key, err = readSecretFile(i.Name, i.APIKeyFile)
 	default:
 		if key = strings.TrimSpace(env.get(i.APIKeyEnv)); key == "" {
 			err = Errorf("", "%s: environment variable %s is empty", i.Name, i.APIKeyEnv)
@@ -641,13 +641,13 @@ func keyFromArrConfig(path string) (string, error) {
 	return string(m[1]), nil
 }
 
-func readSecretFile(path string) (string, error) {
+func readSecretFile(name, path string) (string, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return "", Errorf("", "cannot read %s: %s", path, strerror(err))
 	}
 	if info, err := os.Stat(path); err == nil && info.Mode().Perm()&0o004 != 0 {
-		slog.Warn("key file is world-readable; consider chmod 600", "path", path)
+		slog.Warn("the API key file is world-readable; consider chmod 600", "instance", name)
 	}
 	return strings.TrimSpace(string(raw)), nil
 }

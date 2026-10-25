@@ -126,6 +126,12 @@ func TestStaticAssetsArePublicAndCacheable(t *testing.T) {
 	}
 }
 
+func TestRequestPathsCannotForgeLogLines(t *testing.T) {
+	logs := tu.CaptureLogs(t)
+	newEnv(t, opts{}).browser(lanIP).get("/x%0Alevel=ERROR%20msg=forged")
+	want(t, !strings.Contains(logs.String(), "\nlevel=ERROR msg=forged"), "%s", logs.String())
+}
+
 func TestHealthzSaysOnlyOK(t *testing.T) {
 	r := newEnv(t, opts{}).browser(lanIP).get("/healthz")
 	want(t, r.Code == 200 && r.text() == "ok", "%d %q", r.Code, r.text())
@@ -221,6 +227,9 @@ func TestCookieFlags(t *testing.T) {
 	hb := newEnv(t, opts{admin: true}).browser(lanIP)
 	hb.scheme = "https" // httptest marks https:// requests as TLS
 	want(t, secureCookie(hb.get("/login")), "https request")
+	hb.login()
+	out := hb.post("/logout", nil)
+	want(t, secureCookie(out) && strings.Contains(out.Header().Get("Set-Cookie"), "Max-Age=0"), "logout clears the cookie with the same flags: %s", out.Header().Get("Set-Cookie"))
 }
 
 func TestSecureCookieAndOriginBehindATrustedTLSProxy(t *testing.T) {

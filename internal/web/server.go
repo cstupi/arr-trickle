@@ -195,12 +195,12 @@ func (s *Server) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 	ip, ok := clientIP(peer, r.Header.Get("X-Forwarded-For"), s.trusted)
 	defer func() {
 		if p := recover(); p != nil { // generic page only: no panic text reaches the browser
-			slog.Error("web: internal error", "method", r.Method, "path", r.URL.Path, "panic", p)
+			slog.Error("web: internal error", "method", r.Method, "path", logSafe(r.URL.Path), "panic", p)
 			if w.status == 0 {
 				plain(w, http.StatusInternalServerError, "Internal error. The details are in the server log.")
 			}
 		}
-		slog.Info("web", "client", ip, "method", r.Method, "path", r.URL.Path, "status", w.status, "duration", time.Since(start))
+		slog.Info("web", "client", ip, "method", r.Method, "path", logSafe(r.URL.Path), "status", w.status, "duration", time.Since(start))
 	}()
 	for k, v := range securityHeaders {
 		w.Header().Set(k, v)
@@ -251,6 +251,10 @@ func (s *Server) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// logSafe drops line breaks from client-supplied text before it is logged (the text handler quotes
+// values anyway; this keeps that guarantee independent of the handler).
+func logSafe(s string) string { return strings.ReplaceAll(strings.ReplaceAll(s, "\n", ""), "\r", "") }
+
 // pick is a conditional expression.
 func pick(cond bool, a, b string) string {
 	if cond {
@@ -267,7 +271,7 @@ func (s *Server) checkPost(w http.ResponseWriter, r *http.Request, st *reqState)
 	values, _ := url.ParseQuery(string(body))
 	switch {
 	case !sameOrigin(r, st):
-		slog.Warn("web: refused a cross-origin request", "method", r.Method, "path", r.URL.Path, "client", st.ip)
+		slog.Warn("web: refused a cross-origin request", "method", r.Method, "path", logSafe(r.URL.Path), "client", st.ip)
 		plain(w, http.StatusForbidden, "cross-origin request refused")
 	case !strings.EqualFold(strings.TrimSpace(ctype), "application/x-www-form-urlencoded"):
 		plain(w, http.StatusUnsupportedMediaType, "unsupported content type")
@@ -354,8 +358,12 @@ func (s *Server) notFound(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) setCookie(w http.ResponseWriter, r *http.Request, sess *session) {
+	maxAge := int(s.sessions.absolute.Seconds())
+	if sess.id == "" {
+		maxAge = -1
+	}
 	http.SetCookie(w, &http.Cookie{
-		Name: cookieName, Value: sess.id, Path: "/", MaxAge: int(s.sessions.absolute.Seconds()),
+		Name: cookieName, Value: sess.id, Path: "/", MaxAge: maxAge,
 		HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: s.cookieSecure || stateOf(r).https,
 	})
 }
@@ -483,7 +491,7 @@ func (s *Server) setupSubmit(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	s.sessions.delete(stateOf(r).session.id)
-	http.SetCookie(w, &http.Cookie{Name: cookieName, Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteStrictMode})
+	s.setCookie(w, r, &session{}) // empty and expired: the browser drops it
 	http.Redirect(w, r, "/login", http.StatusSeeOther)
 }
 
