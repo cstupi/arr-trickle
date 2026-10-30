@@ -8,6 +8,8 @@
   The dashboard shows a **Retired** count per app and a **Clear retired** button. Stored in `/state/retired.json`.
 - Passes read further into the wanted list (up to 40 pages) to find items that are not retired.
 - A search answered with a 5xx (e.g. Lidarr's "database is locked") is retried after 5, 15 and 45 seconds.
+- The login page no longer explains how to reset the password. Recovery is still `arr-trickle reset-password`
+  inside the container, which needs access to the host.
 - The dashboard says **Unreachable** only when the app did not answer; an app that answered with an error shows
   **Last pass failed**.
 
