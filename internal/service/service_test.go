@@ -212,6 +212,7 @@ func TestPassesNeverOverlap(t *testing.T) {
 		active.Add(-1)
 		f := tu.NewFake()
 		f.Missing = []apps.Record{tu.A(1)}
+		f.Statuses = map[int]string{1: "failed"} // never retired, so every pass searches it
 		return f, nil
 	}, nil)
 	var wg sync.WaitGroup

@@ -2,6 +2,7 @@ package web
 
 import (
 	"fmt"
+	"net"
 	"regexp"
 	"slices"
 	"strconv"
@@ -10,6 +11,9 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/cstupi/arr-trickle/internal/client"
+	"github.com/cstupi/arr-trickle/internal/config"
+	"github.com/cstupi/arr-trickle/internal/runner"
 	tu "github.com/cstupi/arr-trickle/internal/testutil"
 )
 
@@ -341,13 +345,38 @@ func TestDashboardStatusAfterAPass(t *testing.T) {
 	want(t, strings.Contains(page, "radarr") && strings.Contains(page, "1 search(es)") && strings.Contains(page, "Healthy"), "%s", page)
 }
 
+func TestClearRetired(t *testing.T) {
+	e, b := web(t)
+	e.sched.RunPass()
+	want(t, !strings.Contains(b.get("/").text(), "Clear retired"), "nothing retired yet")
+	e.sched.RunPass() // the first pass's search completed: its movies are retired
+	want(t, e.sched.Retired.Count("radarr") > 0 && strings.Contains(b.get("/").text(), "Clear retired"), "button shown")
+	b.post("/control/clear-retired", form("name", "radarr"))
+	want(t, e.sched.Retired.Count("radarr") == 0, "cleared")
+}
+
 func TestDashboardShowsErrorsAndSkips(t *testing.T) {
 	t.Setenv("ARR_TEST_KEY", tu.Key)
 	e := newEnv(t, opts{toml: radarr + "[[lidarr]]\nname = \"gone\"\nurl = \"http://l:1\"\napi_key_env = \"UNSET_FOR_TEST\"\n"})
 	b := e.browser(lanIP).login()
 	e.sched.RunPass()
 	page := b.get("/").text()
-	want(t, strings.Contains(page, "Unreachable") && strings.Contains(page, "UNSET_FOR_TEST is empty"), "%s", page)
+	want(t, strings.Contains(page, "Last pass failed") && strings.Contains(page, "UNSET_FOR_TEST is empty"), "%s", page)
+}
+
+func TestDashboardSaysUnreachableOnlyWhenTheAppDidNotAnswer(t *testing.T) {
+	t.Setenv("ARR_TEST_KEY", tu.Key)
+	l, _ := net.Listen("tcp", "127.0.0.1:0")
+	addr := l.Addr().String()
+	l.Close()
+	gone := func(i config.Instance) (runner.Prober, error) {
+		return client.New(i.Kind, "http://"+addr, tu.Key, 2*time.Second)
+	}
+	e := newEnv(t, opts{toml: radarr, factory: gone})
+	b := e.browser(lanIP).login()
+	e.sched.RunPass()
+	page := b.get("/").text()
+	want(t, strings.Contains(page, "Unreachable") && !strings.Contains(page, "Last pass failed"), "%s", page)
 }
 
 func TestDashboardWithNoInstances(t *testing.T) {
@@ -372,7 +401,16 @@ func TestControls(t *testing.T) {
 
 func TestRunNowRunsAPassInTheBackground(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		e, b := web(t)
+		failing := func(i config.Instance) (runner.Prober, error) { // never retired, so every pass searches
+			p, err := lanFactory(i)
+			if f, ok := p.(*tu.Fake); ok {
+				f.Statuses = map[int]string{1: "failed"}
+			}
+			return p, err
+		}
+		t.Setenv("ARR_TEST_KEY", tu.Key)
+		e := newEnv(t, opts{toml: radarr, factory: failing})
+		b := e.browser(lanIP).login()
 		e.sched.Start()
 		defer e.sched.Stop(time.Second)
 		synctest.Wait()

@@ -119,3 +119,34 @@ func TestAtomicWriteModeAndCleanup(t *testing.T) {
 		t.Fatal("missing directory")
 	}
 }
+
+func TestRetired(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "retired.json")
+	r := NewRetired(path)
+	r.AddPending("x", Pending{Command: 1, Wanted: "missing", IDs: []int{5, 6}})
+	r.AddPending("x", Pending{Command: 2, Wanted: "cutoff", IDs: []int{5}})
+	r.AddPending("x", Pending{Command: 3, Wanted: "missing", IDs: []int{7}})
+	if n, err := r.Resolve("x", 1, true); n != 2 || err != nil {
+		t.Fatal(n, err)
+	}
+	if n, _ := r.Resolve("x", 3, false); n != 0 {
+		t.Fatal("unclean search retired something")
+	}
+	if n, _ := r.Resolve("x", 99, true); n != 0 {
+		t.Fatal("unknown command")
+	}
+	again := NewRetired(path) // persisted
+	if again.Count("x") != 2 || !again.Set("x", "missing")[6] || again.Set("x", "cutoff")[5] || len(again.Pending("x")) != 1 {
+		t.Fatal(again.data)
+	}
+	if n, _ := again.Resolve("x", 2, true); n != 1 || again.Count("x") != 3 {
+		t.Fatal("cutoff is tracked separately")
+	}
+	if err := again.Clear("x"); err != nil || NewRetired(path).Count("x") != 0 || again.Pending("x") != nil {
+		t.Fatal("clear")
+	}
+	os.WriteFile(path, []byte("{bad"), 0o644)
+	if NewRetired(path).Count("x") != 0 || NewRetired("").Count("x") != 0 {
+		t.Fatal("bad file")
+	}
+}
