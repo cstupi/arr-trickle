@@ -3,6 +3,7 @@
 package service
 
 import (
+	"errors"
 	"log/slog"
 	"maps"
 	"path/filepath"
@@ -24,6 +25,7 @@ type InstanceStatus struct {
 	Name, Kind, URL string
 	BudgetUsed      int
 	BudgetCap       int // 0 = no cap
+	Retired         int // records not searched again until cleared
 	LastPass        time.Time
 	Report          *runner.Report // from the last pass; nil before the first
 }
@@ -46,6 +48,7 @@ type stamped struct {
 // Scheduler is safe for concurrent use.
 type Scheduler struct {
 	Budget    *state.Budget
+	Retired   *state.Retired
 	Activity  *activity.Log
 	paused    state.Flag
 	heartbeat string
@@ -76,6 +79,7 @@ func New(s config.Settings, factory ClientFactory, onReload func(config.Settings
 	}
 	return &Scheduler{
 		Budget:    state.NewBudget(filepath.Join(s.StateDir, "budget.json")),
+		Retired:   state.NewRetired(filepath.Join(s.StateDir, "retired.json")),
 		Activity:  activity.New(filepath.Join(s.StateDir, "activity.jsonl"), activity.MaxBytes),
 		paused:    state.Flag(filepath.Join(s.StateDir, "paused")),
 		heartbeat: filepath.Join(s.StateDir, "heartbeat"),
@@ -155,6 +159,18 @@ func (s *Scheduler) Check(name string) runner.CheckResult {
 	return runner.CheckInstance(inst, c)
 }
 
+// ClearRetired puts the named instance's retired records back into rotation.
+func (s *Scheduler) ClearRetired(name string) error {
+	settings := s.Settings()
+	i := slices.IndexFunc(settings.Instances, func(i config.Instance) bool { return i.Name == name })
+	if i < 0 {
+		return errors.New("no such instance")
+	}
+	name = settings.Instances[i].Name // the configured name, not the form's, goes to the log
+	slog.Info("clearing retired records", "instance", name, "records", s.Retired.Count(name))
+	return s.Retired.Clear(name)
+}
+
 // RunPass does one pass over every instance now.
 func (s *Scheduler) RunPass() []*runner.Report {
 	s.passMu.Lock()
@@ -188,7 +204,7 @@ func (s *Scheduler) runOne(inst config.Instance) *runner.Report {
 		slog.Warn("run failed", "instance", inst.Name, "err", err)
 		r.Error = err.Error()
 	} else {
-		r = runner.RunInstance(inst, c, s.Budget, time.Time{})
+		r = runner.RunInstance(inst, c, s.Budget, s.Retired, time.Time{})
 	}
 	for _, search := range r.Searches {
 		s.Activity.Record(inst.Name, search, time.Time{})
@@ -273,7 +289,7 @@ func (s *Scheduler) Snapshot() Snapshot {
 		}
 	}
 	for _, i := range settings.Instances {
-		st := InstanceStatus{Name: i.Name, Kind: i.Kind, URL: i.URL, BudgetUsed: s.Budget.Used(i.Name), BudgetCap: i.DailyCap}
+		st := InstanceStatus{Name: i.Name, Kind: i.Kind, URL: i.URL, BudgetUsed: s.Budget.Used(i.Name), BudgetCap: i.DailyCap, Retired: s.Retired.Count(i.Name)}
 		st.LastPass, st.Report = reports[i.Name].at, reports[i.Name].report
 		snap.Instances = append(snap.Instances, st)
 	}

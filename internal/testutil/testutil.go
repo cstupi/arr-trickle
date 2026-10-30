@@ -63,7 +63,8 @@ type Fake struct {
 	Queue           int
 	Profiles        map[int]bool
 	App, SortKey    string
-	Err             map[string]error // per method: "status", "health", "queue", "profiles", "wanted", "command"
+	Err             map[string]error // per method: "status", "health", "queue", "profiles", "wanted", "command", "commandstatus"
+	Statuses        map[int]string   // CommandStatus answers by command id; "completed" when absent
 	mu              sync.Mutex
 	Commands        []map[string]any
 }
@@ -86,7 +87,7 @@ func (f *Fake) Status() (map[string]any, error) {
 func (f *Fake) Health() ([]map[string]any, error)      { return f.HealthItems, f.Err["health"] }
 func (f *Fake) QueueSize() (int, error)                { return f.Queue, f.Err["queue"] }
 func (f *Fake) UpgradeProfiles() (map[int]bool, error) { return f.Profiles, f.Err["profiles"] }
-func (f *Fake) Wanted(kind string, pageSize int) (client.WantedPage, error) {
+func (f *Fake) Wanted(kind string, page, pageSize int) (client.WantedPage, error) {
 	if err := f.Err["wanted"]; err != nil {
 		return client.WantedPage{}, err
 	}
@@ -94,8 +95,11 @@ func (f *Fake) Wanted(kind string, pageSize int) (client.WantedPage, error) {
 	if kind == "cutoff" {
 		recs = f.Cutoff
 	}
-	return client.WantedPage{Records: recs[:min(pageSize, len(recs))], SortKey: f.SortKey, Total: len(recs)}, nil
+	from := min((page-1)*pageSize, len(recs))
+	return client.WantedPage{Records: recs[from:min(from+pageSize, len(recs))], SortKey: f.SortKey, Total: len(recs)}, nil
 }
+
+// Command records body and answers with the next command id (1, 2, ...).
 func (f *Fake) Command(body map[string]any) (map[string]any, error) {
 	if err := f.Err["command"]; err != nil {
 		return nil, err
@@ -103,7 +107,19 @@ func (f *Fake) Command(body map[string]any) (map[string]any, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.Commands = append(f.Commands, body)
-	return map[string]any{"id": 1.0}, nil
+	return map[string]any{"id": float64(len(f.Commands))}, nil
+}
+
+func (f *Fake) CommandStatus(id int) (string, error) {
+	if err := f.Err["commandstatus"]; err != nil {
+		return "", err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if st, ok := f.Statuses[id]; ok {
+		return st, nil
+	}
+	return "completed", nil
 }
 
 // Sent is a copy of the commands received so far.

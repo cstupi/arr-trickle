@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -67,6 +68,14 @@ func (a *fakeApp) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		send(200, map[string]any{"totalRecords": 7})
 	case p == "/api/v1/qualityprofile":
 		send(200, []any{map[string]any{"id": 1, "upgradeAllowed": true}, map[string]any{"id": 2, "upgradeAllowed": false}})
+	case p == "/api/v1/command/7":
+		send(200, map[string]any{"id": 7, "status": "completed", "result": "successful"})
+	case p == "/api/v1/command/8":
+		send(200, map[string]any{"id": 8, "status": "completed", "result": "unsuccessful"})
+	case p == "/api/v1/command/9":
+		send(200, map[string]any{"id": 9, "status": "started"})
+	case p == "/api/v1/command/10":
+		send(500, map[string]any{"message": "boom"})
 	case p == "/api/v1/redirect":
 		w.Header().Set("Location", "http://evil.example/steal")
 		w.WriteHeader(302)
@@ -126,12 +135,12 @@ func TestEndpoints(t *testing.T) {
 	if p, err := c.UpgradeProfiles(); err != nil || len(p) != 1 || !p[1] {
 		t.Fatal(p, err)
 	}
-	page, err := c.Wanted("missing", 5)
+	page, err := c.Wanted("missing", 2, 5)
 	if err != nil || len(page.Records) != 1 || page.SortKey != "albums.lastSearchTime" || page.Total != 12 {
 		t.Fatal(page, err)
 	}
 	p := app.last().path
-	for _, want := range []string{"sortKey=albums.lastSearchTime", "includeArtist=true", "monitored=true", "pageSize=5"} {
+	for _, want := range []string{"sortKey=albums.lastSearchTime", "includeArtist=true", "monitored=true", "page=2", "pageSize=5"} {
 		if !strings.Contains(p, want) {
 			t.Errorf("%s missing from %s", want, p)
 		}
@@ -254,10 +263,63 @@ func TestUnexpectedShapes(t *testing.T) {
 		"health":   func() error { _, err := c.Health(); return err },
 		"queue":    func() error { _, err := c.QueueSize(); return err },
 		"profiles": func() error { _, err := c.UpgradeProfiles(); return err },
-		"wanted":   func() error { _, err := c.Wanted("missing", 1); return err },
+		"wanted":   func() error { _, err := c.Wanted("missing", 1, 1); return err },
 	} {
 		if err := call(); err == nil || !strings.Contains(err.Error(), "unexpected response shape") {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
+}
+
+func TestUnreachableOnlyWhenTheAppNeverAnswered(t *testing.T) {
+	l, _ := net.Listen("tcp", "127.0.0.1:0")
+	addr := l.Addr().String()
+	l.Close()
+	gone, _ := New("radarr", "http://"+addr, key, 2*time.Second)
+	_, err := gone.Status()
+	if !Unreachable(err) {
+		t.Fatalf("closed port: %v", err)
+	}
+	c, _ := setup(t)
+	for _, path := range []string{"/servererror", "/invalid", "/html"} {
+		if _, err := c.Request("GET", path, nil); err == nil || Unreachable(err) {
+			t.Errorf("%s: %v", path, err)
+		}
+	}
+	if Unreachable(fmt.Errorf("plain")) || Unreachable(nil) {
+		t.Fatal("non-client errors")
+	}
+}
+
+func TestCommandRetriesOnlyA5xx(t *testing.T) {
+	old := CommandRetryDelays
+	CommandRetryDelays = []time.Duration{time.Millisecond, time.Millisecond}
+	defer func() { CommandRetryDelays = old }()
+	for _, tc := range []struct{ code, failures, calls int }{{500, 2, 3}, {503, 99, 3}, {400, 99, 1}} {
+		var calls atomic.Int32
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if int(calls.Add(1)) <= tc.failures {
+				w.WriteHeader(tc.code)
+				return
+			}
+			w.Write([]byte(`{"id":42}`))
+		}))
+		c, _ := New("lidarr", srv.URL, key, 5*time.Second)
+		v, err := c.Command(map[string]any{"name": "AlbumSearch"})
+		srv.Close()
+		if ok := tc.failures < tc.calls; int(calls.Load()) != tc.calls || (err == nil) != ok || ok && v["id"] != 42.0 {
+			t.Errorf("%+v: calls=%d %v %v", tc, calls.Load(), v, err)
+		}
+	}
+}
+
+func TestCommandStatus(t *testing.T) {
+	c, _ := setup(t)
+	for id, want := range map[int]string{7: "completed", 8: "unsuccessful", 9: "started", 99: "gone"} {
+		if got, err := c.CommandStatus(id); err != nil || got != want {
+			t.Errorf("%d: %q %v", id, got, err)
+		}
+	}
+	_, err := c.CommandStatus(10)
+	wantErr(t, err, "GET /command/10: HTTP 500")
 }

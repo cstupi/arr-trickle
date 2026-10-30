@@ -32,9 +32,13 @@ type Client interface {
 	Health() ([]map[string]any, error)
 	QueueSize() (int, error)
 	UpgradeProfiles() (map[int]bool, error)
-	Wanted(kind string, pageSize int) (client.WantedPage, error)
+	Wanted(kind string, page, pageSize int) (client.WantedPage, error)
 	Command(body map[string]any) (map[string]any, error)
+	CommandStatus(id int) (string, error)
 }
+
+// maxWantedPages bounds the wanted pages one pass reads looking past retired records.
+const maxWantedPages = 40
 
 // Prober is a Client that also answers /system/status (for `check`).
 type Prober interface {
@@ -60,7 +64,9 @@ type Report struct {
 	CutoffTotal  *int
 	Queue        *int
 	Health       []string // health problems that block searching
+	Retired      int      // records retired this pass: their search finished and found nothing
 	Error        string
+	Unreachable  bool // Error is because the app never answered, not because it answered with an error
 }
 
 // OK reports whether the pass finished without an error.
@@ -76,19 +82,48 @@ func (r *Report) Spent() int {
 }
 
 // RunInstance sends this pass's searches for one instance. Errors are reported, not returned.
-func RunInstance(inst config.Instance, c Client, budget *state.Budget, now time.Time) *Report {
+// retired (may be nil) is the records not to search again; this pass adds to it.
+func RunInstance(inst config.Instance, c Client, budget *state.Budget, retired *state.Retired, now time.Time) *Report {
 	r := &Report{Name: inst.Name, Kind: inst.Kind}
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	if err := run(inst, c, budget, now, r); err != nil {
+	if retired == nil {
+		retired = state.NewRetired("")
+	}
+	if err := run(inst, c, budget, retired, now, r); err != nil {
 		slog.Warn("run failed", "instance", inst.Name, "err", err)
-		r.Error = err.Error()
+		r.Error, r.Unreachable = err.Error(), client.Unreachable(err)
 	}
 	return r
 }
 
-func run(inst config.Instance, c Client, budget *state.Budget, now time.Time, r *Report) error {
+// resolve settles the searches sent by earlier passes. One that completed retires its records:
+// the ones that were grabbed have left the wanted list anyway. One that failed, or that the app
+// has forgotten, leaves them in rotation. While an indexer is unhealthy a completed search may
+// not have reached it, so nothing is retired then.
+func resolve(inst config.Instance, c Client, retired *state.Retired, r *Report) error {
+	for _, p := range retired.Pending(inst.Name) {
+		status, err := c.CommandStatus(p.Command)
+		if err != nil {
+			return err
+		}
+		if status == "queued" || status == "started" {
+			continue
+		}
+		n, err := retired.Resolve(inst.Name, p.Command, status == "completed" && len(r.Health) == 0)
+		if err != nil {
+			return fmt.Errorf("could not save the retired list: %w", err)
+		}
+		r.Retired += n
+	}
+	if r.Retired > 0 {
+		slog.Info("retired", "instance", inst.Name, "records", r.Retired, "total", retired.Count(inst.Name))
+	}
+	return nil
+}
+
+func run(inst config.Instance, c Client, budget *state.Budget, retired *state.Retired, now time.Time, r *Report) error {
 	health, err := c.Health()
 	if err != nil {
 		return err
@@ -104,6 +139,9 @@ func run(inst config.Instance, c Client, budget *state.Budget, now time.Time, r 
 		return err
 	}
 	r.Queue = new(queue)
+	if err := resolve(inst, c, retired, r); err != nil {
+		return err
+	}
 	if len(r.Health) > 0 {
 		r.Skipped = r.Health[0]
 	} else if inst.MaxQueue > 0 && queue >= inst.MaxQueue {
@@ -131,7 +169,7 @@ func run(inst config.Instance, c Client, budget *state.Budget, now time.Time, r 
 		}
 		if count <= 0 {
 			// Nothing to send; one-record page just for the backlog size shown on the dashboard.
-			page, err := c.Wanted(wanted, 1)
+			page, err := c.Wanted(wanted, 1, 1)
 			if err != nil {
 				return err
 			}
@@ -144,19 +182,36 @@ func run(inst config.Instance, c Client, budget *state.Budget, now time.Time, r 
 				return err
 			}
 		}
-		// Over-fetch: unreleased, excluded and no-upgrade records are filtered here.
-		page, err := c.Wanted(wanted, max(count*10, 50))
-		if err != nil {
-			return err
-		}
-		*totals[wanted] = new(page.Total)
-		picked := planner.Select(inst.Kind, page.Records, count, now, planner.Options{
+		// Over-fetch: unreleased, excluded, no-upgrade and retired records are filtered here. Retired
+		// records were searched recently, so they sort late; keep reading pages until enough are picked.
+		opts := planner.Options{
 			Exclude: inst.Exclude, UpgradeProfiles: upgrades, PerSeason: inst.Kind == "sonarr" && wanted == "missing",
-		})
+			Skip: retired.Set(inst.Name, wanted),
+		}
+		size := max(count*10, 50)
+		if len(opts.Skip) > 0 {
+			size = max(size, 250)
+		}
+		var records, picked []apps.Record
+		for n := 1; n <= maxWantedPages; n++ {
+			page, err := c.Wanted(wanted, n, size)
+			if err != nil {
+				return err
+			}
+			if n == 1 {
+				*totals[wanted] = new(page.Total)
+			}
+			records = append(records, page.Records...)
+			picked = planner.Select(inst.Kind, records, count, now, opts)
+			if planner.Full(picked, count, opts.PerSeason) || len(page.Records) < size || n*size >= page.Total {
+				break
+			}
+		}
 		for _, cmd := range planner.BuildCommands(inst.Kind, wanted, picked) {
 			cost := planner.QueryCost(cmd)
+			covered := planner.RecordsFor(cmd, picked)
 			var names []string
-			for _, rec := range planner.RecordsFor(cmd, picked) {
+			for _, rec := range covered {
 				names = append(names, apps.Describe(inst.Kind, rec))
 			}
 			shown := strings.Join(names[:min(10, len(names))], "; ")
@@ -164,11 +219,17 @@ func run(inst config.Instance, c Client, budget *state.Budget, now time.Time, r 
 				shown += fmt.Sprintf(" (+%d more)", len(names)-10)
 			}
 			slog.Info("search", "instance", inst.Name, "wanted", wanted, "command", cmd["name"], "items", shown)
-			if _, err := c.Command(cmd); err != nil {
+			sent, err := c.Command(cmd)
+			if err != nil {
 				return err
 			}
 			if err := budget.Add(inst.Name, cost); err != nil {
 				return fmt.Errorf("could not save the daily budget: %w", err)
+			}
+			if id, ok := apps.Int(sent, "id"); ok {
+				if err := retired.AddPending(inst.Name, state.Pending{Command: id, Wanted: wanted, IDs: planner.IDs(covered)}); err != nil {
+					return fmt.Errorf("could not save the retired list: %w", err)
+				}
 			}
 			r.Searches = append(r.Searches, Search{Wanted: wanted, Command: fmt.Sprint(cmd["name"]), Items: names, Cost: cost})
 			remaining -= cost
@@ -263,7 +324,7 @@ func check(inst config.Instance, c Prober, res *CheckResult) error {
 	}
 	res.good("quality profiles allowing upgrades: " + shown)
 	for _, wanted := range []string{"missing", "cutoff"} {
-		page, err := c.Wanted(wanted, 1)
+		page, err := c.Wanted(wanted, 1, 1)
 		if err != nil {
 			return err
 		}

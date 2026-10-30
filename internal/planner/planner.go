@@ -16,6 +16,7 @@ type Options struct {
 	Exclude         []int
 	UpgradeProfiles map[int]bool // nil: no profile filter
 	PerSeason       bool
+	Skip            map[int]bool // record ids not to search (retired)
 }
 
 type seasonKey struct{ series, season any }
@@ -35,6 +36,9 @@ func Select(kind string, records []apps.Record, count int, now time.Time, o Opti
 	seasons := map[seasonKey]bool{}
 	for _, r := range records {
 		if !apps.IsReleased(kind, r, now) {
+			continue
+		}
+		if id, _ := apps.Int(r, "id"); o.Skip[id] {
 			continue
 		}
 		if id, ok := apps.OwnerID(kind, r); ok && slices.Contains(o.Exclude, id) {
@@ -59,6 +63,28 @@ func Select(kind string, records []apps.Record, count int, now time.Time, o Opti
 		picked = append(picked, r)
 	}
 	return picked
+}
+
+// Full reports whether picked (from Select) already holds count records, or count seasons with PerSeason.
+func Full(picked []apps.Record, count int, perSeason bool) bool {
+	if !perSeason {
+		return len(picked) >= count
+	}
+	seasons := map[seasonKey]bool{}
+	for _, r := range picked {
+		seasons[key(r)] = true
+	}
+	return len(seasons) >= count
+}
+
+// IDs is the record ids, in order.
+func IDs(records []apps.Record) []int {
+	ids := make([]int, 0, len(records))
+	for _, r := range records {
+		id, _ := apps.Int(r, "id")
+		ids = append(ids, id)
+	}
+	return ids
 }
 
 // BuildCommands turns selected records into /command bodies.
@@ -86,12 +112,7 @@ func BuildCommands(kind, wanted string, records []apps.Record) []Command {
 	if wanted == "missing" {
 		name = spec.MissingCommand
 	}
-	ids := make([]int, 0, len(records))
-	for _, r := range records {
-		id, _ := apps.Int(r, "id")
-		ids = append(ids, id)
-	}
-	return []Command{{"name": name, spec.IDsField: ids}}
+	return []Command{{"name": name, spec.IDsField: IDs(records)}}
 }
 
 // QueryCost approximates the indexer queries a command causes, per indexer.

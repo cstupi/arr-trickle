@@ -98,3 +98,17 @@ func TestTimesWithoutZoneAreUTC(t *testing.T) {
 		t.Fatal("a zone-less past date is released")
 	}
 }
+
+func TestSkipRetired(t *testing.T) {
+	recs := []apps.Record{tu.A(1), tu.A(2), tu.A(3), tu.A(4)}
+	eq(t, ids(Select("lidarr", recs, 2, tu.Now, Options{Skip: map[int]bool{1: true, 3: true}})), []int{2, 4})
+}
+
+func TestFull(t *testing.T) {
+	eq(t, Full([]apps.Record{tu.A(1)}, 2, false), false)
+	eq(t, Full([]apps.Record{tu.A(1), tu.A(2)}, 2, false), true)
+	eps := []apps.Record{tu.E(1, 1), tu.E(2, 1), tu.E(3, 2)}
+	eq(t, Full(eps[:2], 2, true), false)
+	eq(t, Full(eps, 2, true), true)
+	eq(t, IDs(eps), []int{1, 2, 3})
+}

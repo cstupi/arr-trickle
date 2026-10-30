@@ -80,6 +80,7 @@ var routes = []route{
 	{"POST /control/pause", (*Server).pause},
 	{"POST /control/resume", (*Server).resume},
 	{"POST /control/check", (*Server).check},
+	{"POST /control/clear-retired", (*Server).clearRetired},
 	{"GET /activity", (*Server).activity},
 	{"GET /settings", (*Server).settingsPage},
 	{"POST /settings", (*Server).settingsSave},
@@ -523,6 +524,13 @@ func (s *Server) resume(w http.ResponseWriter, r *http.Request) {
 func (s *Server) check(w http.ResponseWriter, r *http.Request) {
 	if f, ok := s.form(w, r); ok {
 		s.render(w, r, "check.html", http.StatusOK, map[string]any{"Result": s.scheduler.Check(f["name"])})
+	}
+}
+
+func (s *Server) clearRetired(w http.ResponseWriter, r *http.Request) {
+	if f, ok := s.form(w, r); ok {
+		s.control(w, r, func() error { return s.scheduler.ClearRetired(f["name"]) }, "clear the retired list",
+			"Cleared the retired list for "+f["name"]+"; those items will be searched again.")
 	}
 }
 

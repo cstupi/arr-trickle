@@ -134,7 +134,7 @@ func TestWrongKeyIsRejected(t *testing.T) {
 func TestWantedPagesAreSortedByLastSearch(t *testing.T) {
 	eachKind(t, func(t *testing.T, kind string) {
 		for _, wanted := range []string{"missing", "cutoff"} {
-			page, err := clientFor(t, kind).Wanted(wanted, 5)
+			page, err := clientFor(t, kind).Wanted(wanted, 1, 5)
 			if err != nil || page.Total < len(page.Records) || page.SortKey != apps.Specs[kind].SortKey {
 				t.Fatal(wanted, page, err)
 			}
@@ -213,7 +213,7 @@ func addSample(t *testing.T, kind string, c *client.Client) {
 	// The app fills in episodes/albums asynchronously after the add.
 	deadline := time.Now().Add(180 * time.Second)
 	for {
-		page, err := c.Wanted("missing", 50)
+		page, err := c.Wanted("missing", 1, 50)
 		if err == nil && len(page.Records) > 0 {
 			return
 		}
@@ -257,7 +257,7 @@ func TestFreshAppWithoutIndexersIsSkipped(t *testing.T) {
 		for _, h := range health {
 			has = has || h["source"] == "IndexerSearchCheck"
 		}
-		r := runner.RunInstance(instance(t, kind), c, state.NewBudget(filepath.Join(t.TempDir(), "b.json")), time.Time{})
+		r := runner.RunInstance(instance(t, kind), c, state.NewBudget(filepath.Join(t.TempDir(), "b.json")), nil, time.Time{})
 		if !has || !r.OK() || r.Spent() != 0 || r.Skipped == "" {
 			t.Fatal(health, r)
 		}
@@ -271,7 +271,7 @@ func TestEndToEndSearchOfARealMissingItem(t *testing.T) {
 		before := commandIDs(t, c)
 		inst := instance(t, kind)
 		inst.Missing = 1
-		r := runner.RunInstance(inst, withoutNoIndexerHealth{c}, state.NewBudget(filepath.Join(t.TempDir(), "b.json")), time.Time{})
+		r := runner.RunInstance(inst, withoutNoIndexerHealth{c}, state.NewBudget(filepath.Join(t.TempDir(), "b.json")), nil, time.Time{})
 		if !r.OK() || r.Spent() < 1 || r.MissingTotal == nil || *r.MissingTotal == 0 {
 			t.Fatal(r)
 		}

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"maps"
 	"net"
 	"net/http"
@@ -24,11 +25,29 @@ import (
 var MaxResponseBytes int64 = 16 * 1024 * 1024
 
 // Error is a failed request. The message never includes the API key.
-type Error struct{ Msg string }
+type Error struct {
+	Msg    string
+	Status int  // the HTTP status, or 0 when there was no HTTP answer
+	NoConn bool // the app never answered: connection refused, DNS, timeout
+}
 
 func (e *Error) Error() string { return e.Msg }
 
-func errorf(format string, args ...any) *Error { return &Error{fmt.Sprintf(format, args...)} }
+func errorf(format string, args ...any) *Error { return &Error{Msg: fmt.Sprintf(format, args...)} }
+
+func httpErrorf(status int, format string, args ...any) *Error {
+	return &Error{Msg: fmt.Sprintf(format, args...), Status: status}
+}
+
+// Unreachable reports whether err means the app never answered (as opposed to answering with an error).
+func Unreachable(err error) bool {
+	e, ok := errors.AsType[*Error](err)
+	return ok && e.NoConn
+}
+
+// CommandRetryDelays are the waits before re-sending a /command the app answered with a 5xx, e.g. Lidarr's
+// "database is locked" while another write holds its SQLite file. A 5xx there means the command was not queued.
+var CommandRetryDelays = []time.Duration{5 * time.Second, 15 * time.Second, 45 * time.Second}
 
 // WantedPage is one page of /wanted/{missing,cutoff}: the records, the sort key the app echoed back, and totalRecords.
 type WantedPage struct {
@@ -152,16 +171,16 @@ func (c *Client) raw(method, path string, data any) ([]byte, error) {
 	req.Header.Set("User-Agent", "arr-trickle/"+version.Version)
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, errorf("%s %s: %s", method, path, reason(err))
+		return nil, &Error{Msg: fmt.Sprintf("%s %s: %s", method, path, reason(err)), NoConn: true}
 	}
 	defer resp.Body.Close()
-	switch {
-	case resp.StatusCode == http.StatusUnauthorized:
-		return nil, errorf("%s %s: HTTP 401 (check the API key)", method, path)
-	case resp.StatusCode >= 400 && resp.StatusCode < 500:
-		return nil, errorf("%s %s: HTTP %d%s", method, path, resp.StatusCode, errorDetail(resp.Body))
-	case resp.StatusCode >= 300:
-		return nil, errorf("%s %s: HTTP %d", method, path, resp.StatusCode)
+	switch code := resp.StatusCode; {
+	case code == http.StatusUnauthorized:
+		return nil, httpErrorf(code, "%s %s: HTTP 401 (check the API key)", method, path)
+	case code >= 400 && code < 500:
+		return nil, httpErrorf(code, "%s %s: HTTP %d%s", method, path, code, errorDetail(resp.Body))
+	case code >= 300:
+		return nil, httpErrorf(code, "%s %s: HTTP %d", method, path, code)
 	}
 	b, err := io.ReadAll(io.LimitReader(resp.Body, MaxResponseBytes+1))
 	if err != nil {
@@ -234,10 +253,10 @@ func (c *Client) UpgradeProfiles() (map[int]bool, error) {
 	return out, err
 }
 
-// Wanted is one page of /wanted/{missing,cutoff}, least recently searched first.
-func (c *Client) Wanted(kind string, pageSize int) (WantedPage, error) {
+// Wanted is one page (from 1) of /wanted/{missing,cutoff}, least recently searched first.
+func (c *Client) Wanted(kind string, pageNo, pageSize int) (WantedPage, error) {
 	q := url.Values{
-		"page": {"1"}, "pageSize": {strconv.Itoa(pageSize)}, "monitored": {"true"},
+		"page": {strconv.Itoa(pageNo)}, "pageSize": {strconv.Itoa(pageSize)}, "monitored": {"true"},
 		"sortKey": {c.Spec.SortKey}, "sortDirection": {"ascending"},
 	}
 	if c.Spec.Include != "" {
@@ -261,7 +280,32 @@ func (c *Client) Wanted(kind string, pageSize int) (WantedPage, error) {
 	return WantedPage{page.Records, page.SortKey, total}, nil
 }
 
-// Command sends a /command (e.g. a search).
+// CommandStatus is how a command sent earlier stands: the app's status ("queued", "started",
+// "completed", "failed", ...), "unsuccessful" for one that completed with a failed result, or
+// "gone" when the app no longer knows the id (it was restarted, or cleaned up old commands).
+func (c *Client) CommandStatus(id int) (string, error) {
+	cmd, err := call[struct{ Status, Result string }](c, http.MethodGet, "/command/"+strconv.Itoa(id), nil)
+	if e, ok := errors.AsType[*Error](err); ok && e.Status == http.StatusNotFound {
+		return "gone", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if cmd.Status == "completed" && cmd.Result == "unsuccessful" {
+		return "unsuccessful", nil
+	}
+	return cmd.Status, nil
+}
+
+// Command sends a /command (e.g. a search), retrying a 5xx after each of CommandRetryDelays.
 func (c *Client) Command(body map[string]any) (map[string]any, error) {
-	return call[map[string]any](c, http.MethodPost, "/command", body)
+	for attempt := 0; ; attempt++ {
+		v, err := call[map[string]any](c, http.MethodPost, "/command", body)
+		e, ok := errors.AsType[*Error](err)
+		if !ok || e.Status < 500 || attempt == len(CommandRetryDelays) {
+			return v, err
+		}
+		slog.Warn("command failed, retrying", "app", c.Spec.Kind, "err", err, "in", CommandRetryDelays[attempt])
+		time.Sleep(CommandRetryDelays[attempt])
+	}
 }
