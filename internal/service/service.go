@@ -3,6 +3,7 @@
 package service
 
 import (
+	"errors"
 	"log/slog"
 	"maps"
 	"path/filepath"
@@ -160,6 +161,12 @@ func (s *Scheduler) Check(name string) runner.CheckResult {
 
 // ClearRetired puts the named instance's retired records back into rotation.
 func (s *Scheduler) ClearRetired(name string) error {
+	settings := s.Settings()
+	i := slices.IndexFunc(settings.Instances, func(i config.Instance) bool { return i.Name == name })
+	if i < 0 {
+		return errors.New("no such instance")
+	}
+	name = settings.Instances[i].Name // the configured name, not the form's, goes to the log
 	slog.Info("clearing retired records", "instance", name, "records", s.Retired.Count(name))
 	return s.Retired.Clear(name)
 }
