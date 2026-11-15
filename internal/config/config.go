@@ -246,6 +246,7 @@ type Settings struct {
 	StateDir        string
 	LogLevel        string
 	Web             Web
+	Requests        Requests
 }
 
 // unknown lists the keys of m that are not allowed, sorted and comma-separated.
@@ -391,7 +392,7 @@ func Parse(data map[string]any, allowEmpty bool) (Settings, error) {
 			c.add(k, "%s", removedKeys[k])
 		}
 	}
-	allowed := slices.Concat(topKeys, []string{"web"}, apps.Kinds, slices.Collect(maps.Keys(removedKeys)))
+	allowed := slices.Concat(topKeys, []string{"web", "requests"}, apps.Kinds, slices.Collect(maps.Keys(removedKeys)))
 	if u := unknown(data, allowed...); u != "" {
 		c.add("", "unknown setting(s) %s", u)
 	}
@@ -444,6 +445,8 @@ func Parse(data map[string]any, allowEmpty bool) (Settings, error) {
 	var err error
 	s.Web, err = parseWeb(get(data, "web", map[string]any{}))
 	c.take(err)
+	s.Requests, err = parseRequests(get(data, "requests", map[string]any{}))
+	c.take(err)
 	return s, c.err()
 }
 
@@ -458,6 +461,9 @@ func ToData(s Settings) map[string]any {
 	}
 	if web := webData(s.Web); len(web) > 0 {
 		data["web"] = web
+	}
+	if req := requestsData(s.Requests); len(req) > 0 {
+		data["requests"] = req
 	}
 	for _, i := range s.Instances {
 		list, _ := data[i.Kind].([]any)

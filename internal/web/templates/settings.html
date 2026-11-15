@@ -59,6 +59,46 @@
   </form>
 </div>
 
+<h2>Request sync</h2>
+<div class="card form">
+  <p class="hint">Every interval, approved Seerr and Ombi requests from the lookback window that never reached Radarr or
+  Sonarr (for example because the app answered "database is locked") are added and searched. Each item is added at
+  most once: if you delete it afterwards, it stays deleted. Items on the app's exclusion list are left alone.</p>
+  {{with .Sync}}
+  <dl class="facts mt">
+    <dt>Reads</dt><dd>{{range $i, $a := .Apps}}{{if $i}}, {{end}}{{$a}}{{else}}no request app configured (set <code>seerr_url</code> / <code>ombi_url</code> in the file){{end}}</dd>
+    <dt>Last sync</dt><dd>{{with .Last}}{{when .At}}: {{.Checked}} request(s) checked, {{len .Added}} added{{range .Added}}<br><small>{{.Title}} → {{.Target}} (from {{.Source}})</small>{{end}}{{range .Errors}}<br><span class="error">{{.}}</span>{{end}}{{range .Notes}}<br><small class="muted">{{.}}</small>{{end}}{{else}}not yet{{end}}</dd>
+    <dt>Next sync</dt><dd>{{if .Enabled}}{{if .NextSync.IsZero}}paused{{else}}{{when .NextSync}}{{end}}{{else}}off{{end}}</dd>
+    <dt>Added so far</dt><dd>{{.Added}}</dd>
+  </dl>
+  {{end}}
+  <form method="post" action="/settings/requests" class="stack mt">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <label class="check"><input type="checkbox" name="enabled"{{if index .Values "requests.enabled"}} checked{{end}}> Re-add missing requests</label>
+    {{range index .Errors "requests.enabled"}}<span class="error">{{.}}</span>{{end}}
+    <div class="grid2">
+      <label class="field"><span>Minutes between syncs</span>
+        <input name="interval_minutes" value="{{index .Values "requests.interval_minutes"}}" inputmode="numeric" maxlength="20">
+        <small>5 to 1440.</small>
+        {{range index .Errors "requests.interval_minutes"}}<span class="error">{{.}}</span>{{end}}</label>
+      <label class="field"><span>Look back (days)</span>
+        <input name="lookback_days" value="{{index .Values "requests.lookback_days"}}" inputmode="numeric" maxlength="20">
+        <small>Only requests this recent are checked. 1 to 365.</small>
+        {{range index .Errors "requests.lookback_days"}}<span class="error">{{.}}</span>{{end}}</label>
+      <label class="field"><span>Grace (minutes)</span>
+        <input name="grace_minutes" value="{{index .Values "requests.grace_minutes"}}" inputmode="numeric" maxlength="20">
+        <small>Newer requests are left to their app, which may still be sending them. 0 to 1440.</small>
+        {{range index .Errors "requests.grace_minutes"}}<span class="error">{{.}}</span>{{end}}</label>
+    </div>
+    <div class="row"><button type="submit">Save</button></div>
+  </form>
+  {{if .Sync.Enabled}}
+  <form method="post" action="/control/sync-requests" class="inline mt">
+    <input type="hidden" name="csrf" value="{{.CSRF}}"><button type="submit" class="secondary">Sync now</button>
+  </form>
+  {{end}}
+</div>
+
 <h2>Edited only in the file</h2>
 <div class="card">
   <p class="hint">These need a restart and could lock you out, so the UI shows them but doesn't change them.</p>
@@ -68,6 +108,7 @@
       secure cookie {{if .Settings.Web.CookieSecure}}always{{else}}over https{{end}}</dd>
     <dt>Allowed networks</dt><dd>{{join .Settings.Web.AllowedNetworks ", "}}</dd>
     <dt>Trusted proxies</dt><dd>{{with .Settings.Web.TrustedProxies}}{{join . ", "}}{{else}}none{{end}}</dd>
+    {{range $app, $a := .Settings.Requests.Apps}}<dt>{{capitalize $app}}</dt><dd>{{$a.URL}}, key {{if $a.KeyFile}}file <code>{{$a.KeyFile}}</code>{{else}}env <code>{{$a.KeyEnv}}</code>{{end}}</dd>{{end}}
   </dl>
 </div>
 {{end}}

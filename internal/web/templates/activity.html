@@ -24,7 +24,7 @@
     <td>{{.Instance}}</td>
     <td class="nowrap">{{.Command}}<br><small>{{.Kind}}</small></td>
     <td>{{join .Items "; "}}</td>
-    <td data-label="Cost">{{.Cost}}</td>
+    <td data-label="Cost">{{if eq .Kind "request"}}—{{else}}{{.Cost}}{{end}}</td>
   </tr>
   {{end}}
   </tbody>

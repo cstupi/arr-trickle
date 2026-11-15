@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.0
+
+- **Request sync.** Every hour (configurable), approved Seerr and Ombi requests from the last 14 days that never
+  reached Radarr or Sonarr are added there and searched. Each request is added at most once, items on the app's
+  exclusion list are skipped, and requests younger than 10 minutes are left alone. Adds appear in the activity log;
+  **Settings → Request sync** turns it on and off, sets the interval, and has **Sync now**. New `[requests]`
+  table; off by default. State in `/state/readded.json`. See the README.
+- Go 1.27.4 (fixes GO-2026-6859 in `net/http`); `golang.org/x/crypto` 0.59.0; staticcheck and govulncheck updated.
+
 ## 0.4.0
 
 - **Items are retired after one clean search.** A pass now checks how the searches it sent earlier finished. When

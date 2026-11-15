@@ -3,6 +3,7 @@ package testutil
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -63,8 +64,9 @@ type Fake struct {
 	Queue           int
 	Profiles        map[int]bool
 	App, SortKey    string
-	Err             map[string]error // per method: "status", "health", "queue", "profiles", "wanted", "command", "commandstatus"
-	Statuses        map[int]string   // CommandStatus answers by command id; "completed" when absent
+	Err             map[string]error                                 // per method: "status", "health", "queue", "profiles", "wanted", "command", "commandstatus"
+	Statuses        map[int]string                                   // CommandStatus answers by command id; "completed" when absent
+	RequestFunc     func(method, path string, data any) (any, error) // answers Request; nil: every call fails
 	mu              sync.Mutex
 	Commands        []map[string]any
 }
@@ -79,6 +81,14 @@ func For(kind string) *Fake {
 	f := NewFake()
 	f.App, f.SortKey = apps.Specs[kind].AppName, apps.Specs[kind].SortKey
 	return f
+}
+
+// Request is the generic API call request sync uses.
+func (f *Fake) Request(method, path string, data any) (any, error) {
+	if f.RequestFunc == nil {
+		return nil, errors.New("fake: no RequestFunc")
+	}
+	return f.RequestFunc(method, path, data)
 }
 
 func (f *Fake) Status() (map[string]any, error) {

@@ -366,6 +366,13 @@ func fullSettings() Settings {
 			Enabled: false, Listen: "127.0.0.1", Port: 9000, CookieSecure: true, SessionHours: 2,
 			AllowedNetworks: []string{"192.168.1.0/24", "fd00::/8"}, TrustedProxies: []string{"10.0.0.2/32"},
 		},
+		Requests: Requests{
+			Enabled: true, IntervalMinutes: 30, LookbackDays: 7, GraceMinutes: 0, TimeoutSeconds: 20,
+			Apps: map[string]RequestApp{
+				"seerr": {URL: "http://seerr:5055", KeyFile: "/state/secrets/seerr.key"},
+				"ombi":  {URL: "http://ombi:3579/ombi", KeyEnv: "OMBI_KEY"},
+			},
+		},
 	}
 }
 
