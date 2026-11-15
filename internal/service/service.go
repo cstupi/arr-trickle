@@ -13,12 +13,39 @@ import (
 
 	"github.com/cstupi/arr-trickle/internal/activity"
 	"github.com/cstupi/arr-trickle/internal/config"
+	"github.com/cstupi/arr-trickle/internal/requests"
 	"github.com/cstupi/arr-trickle/internal/runner"
 	"github.com/cstupi/arr-trickle/internal/state"
 )
 
 // ClientFactory builds the client for an instance (runner.MakeClient, or a fake in tests).
 type ClientFactory func(config.Instance) (runner.Prober, error)
+
+// SourceFactory builds the client for a request app ("seerr" or "ombi"); MakeSource, or a fake in tests.
+type SourceFactory func(r config.Requests, app string) (requests.Source, error)
+
+// MakeSource builds the real client for a request app (reads its key).
+func MakeSource(r config.Requests, app string) (requests.Source, error) {
+	key, err := r.Key(app, nil)
+	if err != nil {
+		return nil, err
+	}
+	timeout := time.Duration(r.TimeoutSeconds) * time.Second
+	if app == "ombi" {
+		return requests.NewOmbi(r.Apps[app].URL, key, timeout), nil
+	}
+	return requests.NewSeerr(r.Apps[app].URL, key, timeout), nil
+}
+
+// RequestSync is request sync's part of the dashboard.
+type RequestSync struct {
+	Enabled  bool
+	Running  bool
+	Apps     []string // the request apps read
+	NextSync time.Time
+	Added    int              // requests added since the list was started
+	Last     *requests.Result // nil before the first sync
+}
 
 // InstanceStatus is one row of the dashboard.
 type InstanceStatus struct {
@@ -38,6 +65,7 @@ type Snapshot struct {
 	LastPass        time.Time
 	NextPass        time.Time // zero while paused
 	Instances       []InstanceStatus
+	Requests        RequestSync
 }
 
 type stamped struct {
@@ -50,6 +78,8 @@ type Scheduler struct {
 	Budget    *state.Budget
 	Retired   *state.Retired
 	Activity  *activity.Log
+	Done      *requests.Done
+	Sources   SourceFactory
 	paused    state.Flag
 	heartbeat string
 	factory   ClientFactory
@@ -63,7 +93,12 @@ type Scheduler struct {
 	lastPass  time.Time
 	reports   map[string]stamped
 
-	passMu sync.Mutex // one pass at a time
+	syncRequested bool
+	syncing       bool
+	lastSyncTick  time.Time
+	lastSync      *requests.Result
+
+	passMu sync.Mutex // one pass or sync at a time
 	wake   chan struct{}
 	stop   chan struct{}
 	done   chan struct{}
@@ -81,6 +116,8 @@ func New(s config.Settings, factory ClientFactory, onReload func(config.Settings
 		Budget:    state.NewBudget(filepath.Join(s.StateDir, "budget.json")),
 		Retired:   state.NewRetired(filepath.Join(s.StateDir, "retired.json")),
 		Activity:  activity.New(filepath.Join(s.StateDir, "activity.jsonl"), activity.MaxBytes),
+		Done:      requests.NewDone(filepath.Join(s.StateDir, "readded.json")),
+		Sources:   MakeSource,
 		paused:    state.Flag(filepath.Join(s.StateDir, "paused")),
 		heartbeat: filepath.Join(s.StateDir, "heartbeat"),
 		factory:   factory,
@@ -123,6 +160,14 @@ func (s *Scheduler) UpdateSettings(n config.Settings) {
 func (s *Scheduler) RunNow() {
 	s.mu.Lock()
 	s.requested = true
+	s.mu.Unlock()
+	s.poke()
+}
+
+// SyncNow runs request sync as soon as possible, even while paused (if it is enabled).
+func (s *Scheduler) SyncNow() {
+	s.mu.Lock()
+	s.syncRequested = true
 	s.mu.Unlock()
 	s.poke()
 }
@@ -225,10 +270,27 @@ func (s *Scheduler) nextTick() time.Time {
 	return s.lastTick.Add(time.Duration(s.settings.IntervalMinutes) * time.Minute)
 }
 
+// nextSync is when request sync runs next (the zero time if it never has: due now); ok is false while it is off.
+func (s *Scheduler) nextSync() (next time.Time, ok bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.settings.Requests.Enabled {
+		return time.Time{}, false
+	}
+	if s.lastSyncTick.IsZero() {
+		return time.Time{}, true
+	}
+	return s.lastSyncTick.Add(time.Duration(s.settings.Requests.IntervalMinutes) * time.Minute), true
+}
+
 func (s *Scheduler) loop() {
 	defer close(s.done)
 	for {
-		timer := time.NewTimer(max(time.Until(s.nextTick()), 0))
+		wait := max(time.Until(s.nextTick()), 0)
+		if next, on := s.nextSync(); on {
+			wait = min(wait, max(time.Until(next), 0))
+		}
+		timer := time.NewTimer(wait)
 		select {
 		case <-s.stop:
 			timer.Stop()
@@ -251,7 +313,90 @@ func (s *Scheduler) loop() {
 		case due:
 			s.beat() // paused, but alive: the healthcheck stays green
 		}
+		next, on := s.nextSync()
+		s.mu.Lock()
+		syncRequested, syncDue := s.syncRequested, on && !time.Now().Before(next)
+		s.syncRequested = false
+		if syncDue {
+			s.lastSyncTick = time.Now()
+		}
+		s.mu.Unlock()
+		if on && (syncRequested || (syncDue && !s.Paused())) {
+			s.safeSync()
+		}
 	}
+}
+
+func (s *Scheduler) safeSync() {
+	defer func() {
+		if p := recover(); p != nil {
+			slog.Error("request sync failed unexpectedly", "panic", p)
+		}
+	}()
+	s.RunSync()
+}
+
+// RunSync does one request sync now: approved Seerr/Ombi requests missing from Radarr/Sonarr are added.
+func (s *Scheduler) RunSync() *requests.Result {
+	s.passMu.Lock()
+	defer s.passMu.Unlock()
+	s.mu.Lock()
+	settings := s.settings
+	s.syncing = true
+	s.mu.Unlock()
+	var r *requests.Result
+	defer func() {
+		s.mu.Lock()
+		s.syncing = false
+		if r != nil {
+			s.lastSync = r
+		}
+		s.mu.Unlock()
+	}()
+	r = s.sync(settings)
+	return r
+}
+
+func (s *Scheduler) sync(settings config.Settings) *requests.Result {
+	now := time.Now().UTC()
+	r := &requests.Result{At: now}
+	targets := requests.Targets{}
+	for kind, app := range map[string]string{"movie": "radarr", "tv": "sonarr"} {
+		i := slices.IndexFunc(settings.Instances, func(i config.Instance) bool { return i.Kind == app })
+		if i < 0 {
+			continue
+		}
+		inst := settings.Instances[i]
+		c, err := s.factory(inst)
+		if err != nil {
+			r.Errors = append(r.Errors, inst.Name+": "+err.Error())
+			continue
+		}
+		arr, ok := c.(requests.Arr)
+		if !ok {
+			r.Errors = append(r.Errors, inst.Name+": client cannot add items")
+			continue
+		}
+		targets[kind] = requests.Target{Name: inst.Name, Arr: arr}
+	}
+	var sources []requests.Source
+	for _, app := range settings.Requests.ConfiguredRequestApps() {
+		src, err := s.Sources(settings.Requests, app)
+		if err != nil {
+			r.Errors = append(r.Errors, err.Error())
+			continue
+		}
+		sources = append(sources, src)
+	}
+	lookback := time.Duration(settings.Requests.LookbackDays) * 24 * time.Hour
+	grace := time.Duration(settings.Requests.GraceMinutes) * time.Minute
+	res := requests.Sync(sources, targets, s.Done, now, lookback, grace)
+	res.Errors = append(r.Errors, res.Errors...)
+	for _, a := range res.Added {
+		s.Activity.Record(a.Target, runner.Search{Wanted: "request", Command: "Added from " + a.Source, Items: []string{a.Title}}, time.Time{})
+	}
+	slog.Info("request sync", "checked", res.Checked, "added", len(res.Added), "problems", len(res.Errors))
+	return res
 }
 
 func (s *Scheduler) safePass() {
@@ -281,7 +426,15 @@ func (s *Scheduler) Snapshot() Snapshot {
 	s.mu.Lock()
 	settings, reports := s.settings, maps.Clone(s.reports)
 	snap := Snapshot{Paused: paused, Running: s.running, IntervalMinutes: settings.IntervalMinutes, LastPass: s.lastPass}
+	snap.Requests = RequestSync{Enabled: settings.Requests.Enabled, Running: s.syncing, Apps: settings.Requests.ConfiguredRequestApps(), Last: s.lastSync}
 	s.mu.Unlock()
+	if next, on := s.nextSync(); on && !paused {
+		snap.Requests.NextSync = time.Now()
+		if next.After(snap.Requests.NextSync) {
+			snap.Requests.NextSync = next
+		}
+	}
+	snap.Requests.Added = s.Done.Count()
 	if !paused {
 		snap.NextPass = time.Now()
 		if next.After(snap.NextPass) {

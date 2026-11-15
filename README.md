@@ -37,4 +37,22 @@ services:
 - The activity log (`/state/activity.jsonl`) rotates itself at 1 MiB, keeping one older file.
 - Web UI on port **8790**, open to loopback and private networks only; sessions last 12 hours.
 
+## Request sync
+
+Seerr and Ombi add a request to Radarr/Sonarr once. If that add fails (Radarr answering "database is locked" is the
+usual cause), the request stays approved but nothing ever downloads, and nobody is told. Request sync closes that
+gap: every **60 minutes** it reads approved (and Seerr's failed) requests from the last **14 days**, and adds any that
+Radarr or Sonarr doesn't have, with the request's quality profile and root folder (or the request app's defaults),
+then searches. Off unless `[requests] enabled = true`.
+
+- Movies go to the first `[[radarr]]`, series to the first `[[sonarr]]` (only the requested seasons are monitored).
+- Each request is added **at most once** (kept in `/state/readded.json`): if you delete it afterwards, it stays
+  deleted. Items on the app's exclusion list, requests marked available, and 4K requests are left alone.
+- Requests newer than **10 minutes** are left to their app, which may still be sending them.
+- An add answered with a 5xx is retried after 5, 15 and 45 seconds.
+- Each add appears in the activity log; **Settings → Request sync** shows the last result and has **Sync now**.
+  Pause stops request sync too.
+- Keys: `seerr_key_file`/`ombi_key_file` (or `_env`). Seerr's key is in its `settings.json` (`main.apiKey`),
+  Ombi's under Settings → Ombi → API key.
+
 All settings: [`examples/config.toml`](examples/config.toml).

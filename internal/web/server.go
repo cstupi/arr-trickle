@@ -81,9 +81,11 @@ var routes = []route{
 	{"POST /control/resume", (*Server).resume},
 	{"POST /control/check", (*Server).check},
 	{"POST /control/clear-retired", (*Server).clearRetired},
+	{"POST /control/sync-requests", (*Server).syncRequests},
 	{"GET /activity", (*Server).activity},
 	{"GET /settings", (*Server).settingsPage},
 	{"POST /settings", (*Server).settingsSave},
+	{"POST /settings/requests", (*Server).requestsSave},
 	{"GET /settings/instances/new", (*Server).instanceNew},
 	{"POST /settings/instances/new", (*Server).instanceCreate},
 	{"GET /settings/instances/{kind}/{index}", (*Server).instanceEdit},
@@ -573,9 +575,56 @@ type instanceRow struct {
 
 func (s *Server) settingsPage(w http.ResponseWriter, r *http.Request) {
 	st := s.scheduler.Settings()
-	s.renderSettings(w, r, http.StatusOK, map[string]any{
-		"interval_minutes": strconv.Itoa(st.IntervalMinutes), "log_level": st.LogLevel,
-	}, nil, nil)
+	values := map[string]any{"interval_minutes": strconv.Itoa(st.IntervalMinutes), "log_level": st.LogLevel}
+	maps.Copy(values, requestValues(st.Requests))
+	s.renderSettings(w, r, http.StatusOK, values, nil, nil)
+}
+
+// requestValues is the request sync form prefill, keyed "requests.<field>".
+func requestValues(r config.Requests) map[string]any {
+	return map[string]any{
+		"requests.enabled": r.Enabled, "requests.interval_minutes": strconv.Itoa(r.IntervalMinutes),
+		"requests.lookback_days": strconv.Itoa(r.LookbackDays), "requests.grace_minutes": strconv.Itoa(r.GraceMinutes),
+	}
+}
+
+func (s *Server) requestsSave(w http.ResponseWriter, r *http.Request) {
+	f, ok := s.form(w, r)
+	if !ok {
+		return
+	}
+	s.editor.Lock()
+	defer s.editor.Unlock()
+	data := config.ToData(s.scheduler.Settings())
+	applyRequests(data, f)
+	if _, err := s.editor.save(data); err != nil {
+		byField, general := splitErrors(err, "requests")
+		errs := fieldErrors{}
+		for k, v := range byField {
+			errs["requests."+k] = v
+		}
+		st := s.scheduler.Settings()
+		values := map[string]any{"interval_minutes": strconv.Itoa(st.IntervalMinutes), "log_level": st.LogLevel,
+			"requests.enabled": f["enabled"] == "on"}
+		for _, k := range []string{"interval_minutes", "lookback_days", "grace_minutes"} {
+			values["requests."+k] = f[k]
+		}
+		s.renderSettings(w, r, http.StatusBadRequest, values, errs, general)
+		return
+	}
+	s.redirect(w, r, "/settings", "Request sync settings saved.")
+}
+
+func (s *Server) syncRequests(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.form(w, r); !ok {
+		return
+	}
+	if !s.scheduler.Settings().Requests.Enabled {
+		s.redirect(w, r, "/settings", "Request sync is off.")
+		return
+	}
+	s.scheduler.SyncNow()
+	s.redirect(w, r, "/settings", "Request sync started.")
 }
 
 func (s *Server) renderSettings(w http.ResponseWriter, r *http.Request, status int, values map[string]any, errs fieldErrors, general []string) {
@@ -587,7 +636,7 @@ func (s *Server) renderSettings(w http.ResponseWriter, r *http.Request, status i
 		}
 	}
 	s.render(w, r, "settings.html", status, map[string]any{
-		"Settings": settings, "Rows": rows, "Path": s.editor.path, "Problem": s.editor.problem(),
+		"Settings": settings, "Rows": rows, "Sync": s.scheduler.Snapshot().Requests, "RequestApps": config.RequestApps, "Path": s.editor.path, "Problem": s.editor.problem(),
 		"Kinds": apps.Kinds, "Values": values, "Errors": errs, "General": general, "LogLevels": config.LogLevels,
 	})
 }

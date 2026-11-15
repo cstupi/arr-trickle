@@ -90,6 +90,7 @@ form.stack { display: grid; gap: 1rem; max-width: 40rem; }
 .grid2 { display: grid; gap: 1rem; align-items: start; grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr)); }
 input, select { font: inherit; width: 100%; height: 2.6rem; padding: .5rem .7rem; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--text); }
 input[type="checkbox"] { width: auto; height: auto; accent-color: var(--accent); }
+label.check { display: flex; align-items: center; gap: .5rem; }
 .row select { width: auto; }
 fieldset { border: 1px solid var(--line); border-radius: var(--radius); padding: 1rem; margin: 0; display: grid; gap: 1rem; }
 legend { font-weight: 600; padding: 0 .35rem; }

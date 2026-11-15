@@ -47,3 +47,16 @@ api_key_env = "LIDARR_API_KEY"   # or read the key from an environment variable
 missing = 6
 cutoff = 2
 daily_cap = 190    # e.g. a 300/day indexer limit minus ~96 RSS queries
+
+# Request sync: approved Seerr/Ombi requests that never reached Radarr/Sonarr (e.g. the app answered
+# "database is locked" and the request app never retried) are added and searched. Off unless enabled.
+# Movies go to the first [[radarr]], series to the first [[sonarr]].
+# [requests]
+# enabled = true
+# interval_minutes = 60    # 5 to 1440
+# lookback_days = 14       # only requests this recent are checked
+# grace_minutes = 10       # newer requests are left to their app, which may still be sending them
+# seerr_url = "http://seerr:5055"
+# seerr_key_file = "/state/secrets/seerr.key"   # or seerr_key_env
+# ombi_url = "http://ombi:3579/ombi"            # include Ombi's base path, if it has one
+# ombi_key_file = "/state/secrets/ombi.key"     # or ombi_key_env

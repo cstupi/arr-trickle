@@ -62,6 +62,10 @@ func Dump(s Settings) string {
 		b.WriteString("\n[web]\n")
 		writeKeys(&b, web, webKeys)
 	}
+	if req, ok := data["requests"].(map[string]any); ok {
+		b.WriteString("\n[requests]\n")
+		writeKeys(&b, req, requestsKeys)
+	}
 	for _, i := range s.Instances {
 		fmt.Fprintf(&b, "\n[[%s]]\n", i.Kind)
 		writeKeys(&b, instanceData(i), instanceKeys)

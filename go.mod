@@ -2,9 +2,9 @@ module github.com/cstupi/arr-trickle
 
 go 1.26.0
 
-toolchain go1.27.3
+toolchain go1.27.4
 
 require (
 	github.com/BurntSushi/toml v1.6.0
-	golang.org/x/crypto v0.58.0
+	golang.org/x/crypto v0.59.0
 )

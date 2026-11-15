@@ -52,6 +52,19 @@ func applyGlobal(data map[string]any, f postForm) {
 	data["log_level"] = f["log_level"]
 }
 
+// applyRequests puts a submitted request sync form into data's [requests] table (app connections are kept).
+func applyRequests(data map[string]any, f postForm) {
+	req, _ := data["requests"].(map[string]any)
+	if req == nil {
+		req = map[string]any{}
+	}
+	req["enabled"] = f["enabled"] == "on"
+	for _, k := range []string{"interval_minutes", "lookback_days", "grace_minutes"} {
+		req[k] = number(f[k])
+	}
+	data["requests"] = req
+}
+
 // instanceValues is the form prefill. There is deliberately no field for the key itself: it is write-only.
 func instanceValues(inst *config.Instance) postForm {
 	if inst == nil {
